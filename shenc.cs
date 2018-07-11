@@ -34,6 +34,7 @@ namespace shenc
                     PrintHelp();
                     return;
                 }
+                UpdateDynamicDns();
                 var opcode = args[0].ToUpperInvariant();
                 var keyid = args.Length > 1
                     ? args[1]
@@ -70,6 +71,82 @@ namespace shenc
                     default:
                         PrintHelp();
                         return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+            }
+        }
+
+        private static string WhatsMyIP()
+        {
+            var webClient = new WebClient();
+            webClient.Headers.Add("User-Agent", "shenc/0.1 shenc@mrshaunwilson.com");
+            var response = webClient.DownloadString("https://ipapi.co/json/");
+            dynamic obj = Newtonsoft.Json.JsonConvert.DeserializeObject(response);
+            return (obj != null && !string.IsNullOrWhiteSpace(Convert.ToString(obj.ip)))
+                ? obj.ip
+                : Dns.GetHostEntry(IPAddress.Any).AddressList.FirstOrDefault();
+        }
+
+        private static bool TryWebGet(
+            Uri uri,
+            string userName,
+            string password,
+            out string result)
+        {
+            try
+            {
+                var webClient = new WebClient
+                {
+                    Credentials = new NetworkCredential(userName, password),
+                    CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore),
+                    Encoding = Encoding.UTF8
+                };
+                webClient.Headers.Add("User-Agent", "shenc/0.1 shenc@mrshaunwilson.com");
+                result = webClient.DownloadString(uri);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // TODO: use a logging framework, instead
+                result = (new StringBuilder($"Exception: {ex.GetType().FullName}"))
+                    .AppendLine($"Exception: {ex.GetType().FullName}")
+                    .AppendLine($"Message: {ex.Message}")
+                    .AppendLine($"StackTrace: {ex.StackTrace}")
+                    .ToString();
+                return false;
+            }
+        }
+
+        private static void UpdateDynamicDns()
+        {
+            try
+            {
+                var hostname = System.Configuration.ConfigurationManager.AppSettings["no-ip:hostname"];
+                var auth = System.Configuration.ConfigurationManager.AppSettings["no-ip:auth"];
+                var keyid = System.Configuration.ConfigurationManager.AppSettings["no-ip:key"] ?? "chat";
+                if (!string.IsNullOrEmpty(hostname) && !string.IsNullOrEmpty(auth))
+                {
+                    var key = LoadKeypair(keyid, false);
+                    var edata = Convert.FromBase64String(auth);
+                    var data = key.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+                    var parts = Encoding.UTF8.GetString(data).Split(':');
+
+                    var userName = parts[0];
+                    var password = parts[1];
+
+                    var ipaddr = System.Configuration.ConfigurationManager.AppSettings["no-ip:address"] ?? WhatsMyIP();
+
+                    var ddnsSuccess = TryWebGet(
+                        new Uri($"https://dynupdate.no-ip.com/nic/update?hostname={hostname}&myip={ipaddr}"),
+                        userName,
+                        password,
+                        out string result);
+
+                    Console.WriteLine($"=== DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}");
+                    Console.WriteLine(result);
                 }
             }
             catch (Exception ex)
@@ -243,9 +320,7 @@ namespace shenc
             }
         }
 
-        private static async Task<ClientState> ConnectTo(
-            string hostport,
-            RSA csp)
+        private static async Task<ClientState> ConnectTo(string hostport, RSA csp)
         {
             var parts = hostport.Split(new[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
             var hostName = parts[0];
@@ -318,7 +393,7 @@ namespace shenc
                                 readOffset += 4;
                                 if (expectedSize > (buf.Length - readOffset))
                                 {
-                                    throw new IndexOutOfRangeException($"Size Prefix '{expectedSize}' exceeds internal limit '{buf.Length}' for [{client.HostName}:{client.PortNumber}]");
+                                    throw new IndexOutOfRangeException($"Size Prefix '{expectedSize}' exceeds '{buf.Length}' for [{client.HostName}:{client.PortNumber}]");
                                 }
                             }
                         }
@@ -486,9 +561,32 @@ namespace shenc
 
         private static void PrintHelp()
         {
+            Console.WriteLine();
             Console.WriteLine("shenc g //generates a new keypair");
+            Console.WriteLine();
             Console.WriteLine("shenc e [keyfile] [input] // encrypts a string or file using specified keypair");
             Console.WriteLine("shenc d [keyfile] [input] // decrypts a string or file using specified keypair");
+            Console.WriteLine();
+            Console.WriteLine("shenc chat [keyfile] // enters into 'chat mode'");
+            Console.WriteLine();
+            Console.WriteLine("=== ");
+            Console.WriteLine("=== NO-IP Support:");
+            Console.WriteLine("=== ");
+            Console.WriteLine("=== In your app config, add two <appSettings/> keys:");
+            Console.WriteLine("=== ");
+            Console.WriteLine(@"    <appSettings>
+        <add key=""no-ip:hostname"" value=""w00tcakes.ddns.net""/>
+        <add key=""no-ip:auth"" value=""UDkgkUmnzZMvIbmSLX9Ftp5ejFRB5tgpwsTrHV/8g+QCB0=""/>
+        <!-- optional keys, and their defauls
+        <add key=""no-ip:key"" value=""chat""/>
+        <add key=""no-ip:address"" value=""127.0.0.1""/>
+        -->
+    </appSettings>");
+            Console.WriteLine();
+            Console.WriteLine("=== You can create an encrypted `auth` value like so:");
+            Console.WriteLine("shenc e chat noip-username:noip-password");
+            Console.WriteLine("=== Then copy-paste the base64-encoded value into your config.");
+            Console.WriteLine("=== ");
         }
 
         private static RSA GenerateKeypair(string keyid = null)
