@@ -28,10 +28,11 @@ namespace shenc
 
         private static TcpListener _listener;
 
-        private static Process _debugLogCurrentProcess = null;
+        private static int _processId;
 
         private static void Main(string[] args)
         {
+            _processId = Process.GetCurrentProcess().Id;
             try
             {
                 if (args == null || args.Length == 0)
@@ -58,23 +59,26 @@ namespace shenc
                             }
                             var rsa = LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
                             var cancellationTokenSource = new CancellationTokenSource();
-                            SwitchToInteractiveMode(rsa, cancellationTokenSource)
-                                .Wait();
+                            SwitchToInteractiveMode(rsa, cancellationTokenSource);
                         }
                         return;
 
+                    case "GENKEYS":
                     case "G":
-                        GenerateKeypair(keyid);
+                        GenerateKeypair(keyid, int.Parse(input ?? "8192"));
                         return;
 
+                    case "ENCRYPT":
                     case "E":
                         Encrypt(keyid, input);
                         break;
 
+                    case "DECRYPT":
                     case "D":
                         Decrypt(keyid, input);
                         break;
 
+                    case "HASH":
                     case "H":
                         Hash(keyid);
                         break;
@@ -95,6 +99,7 @@ namespace shenc
             using (var rsa = LoadKeypair(keyid, false))
             {
                 var thumbprint = GetThumbprint(rsa);
+                Log($"HASH: {keyid}=\"{thumbprint}\"");
             }
         }
 
@@ -103,7 +108,7 @@ namespace shenc
             var webClient = new WebClient();
             webClient.Headers.Add("User-Agent", "shenc/0.1 shenc@mrshaunwilson.com");
             var response = webClient.DownloadString("https://ipapi.co/json/");
-            dynamic obj = Newtonsoft.Json.JsonConvert.DeserializeObject(response);
+            dynamic obj = JsonConvert.DeserializeObject(response);
             return (obj != null && !string.IsNullOrWhiteSpace(Convert.ToString(obj.ip)))
                 ? obj.ip
                 : Dns.GetHostEntry(IPAddress.Any).AddressList.FirstOrDefault();
@@ -173,7 +178,7 @@ namespace shenc
             }
         }
 
-        private static async Task SwitchToInteractiveMode(
+        private static void SwitchToInteractiveMode(
             RSA rsa,
             CancellationTokenSource cancellationTokenSource)
         {
@@ -232,7 +237,8 @@ namespace shenc
                                 {
                                     var clients = _clients.Values
                                         .Where(client => commandParts.Any(e =>
-                                               e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
+                                               e == "*" // accept a wildcard for "all" clients
+                                               || e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
                                                || e.Equals($"{client.HostName}:{client.PortNumber}", StringComparison.OrdinalIgnoreCase)
                                                || e.Equals(client.Thumbprint, StringComparison.OrdinalIgnoreCase)));
                                     foreach (var client in clients)
@@ -778,24 +784,6 @@ namespace shenc
                 }
             }
             Log("NOLISTEN: Stopped listening.");
-            // TODO: move the following into a "disconnect all" variant of "/DISCONNECT"
-            /*
-            if (_clients != null && _clients.Count > 0)
-            {
-                // NOTE: this initiates asynchronous 'client worker
-                //       stops' for all clients, and then waits on all of
-                //       them to complete. it is done this way rather
-                //       than one at a time so any delays can be
-                //       overlapped (ie. it takes less time to shutdown
-                //       for a large number of connections)
-                Task.WaitAll(
-                    _clients
-                        .Values
-                        .Select(client => StopClientWorker(client))
-                        .ToArray());
-                _clients.Clear();
-            }
-            */
         }
 
         private static async Task StopClientWorker(ClientState client)
@@ -851,7 +839,7 @@ Summary:
 Usage:
     /NOLISTEN
 
-See also: /DISCONNECT, /BAN, /LISTEN
+See also: /BAN, /DISCONNECT, /LISTEN
 ");
                     break;
 
@@ -881,7 +869,7 @@ Summary:
     Disconnect a remote system.
 
 Usage:
-    /DISCONNECT <alias|thumbprint|<host[:port]>]>
+    /DISCONNECT <alias|thumbprint|<host[:port]>|*]>
 
     Only 1 the 3 parameters shown are required:
 
@@ -902,7 +890,12 @@ Usage:
     port = (optional) The Port Number to listen for
         connections on, defaults to port 18593.
 
-See also: /DISCONNECT
+    -or- 
+
+    * = a special-case literal character '*' (asterisk)
+        which will disconnect all remote systems.
+
+See also: /BAN, /CONNECT
 ");
                     break;
 
@@ -1006,12 +999,21 @@ Usage:
 
         private static void PrintHelp() =>
             Console.WriteLine(@"
-shenc g //generates a new keypair
+shenc genkeys
+    generates a new keypair
 
-shenc e [keyfile] [input] // encrypts a string or file using specified keypair
-shenc d [keyfile] [input] // decrypts a string or file using specified keypair
+shenc hash <keyfile>
+    gets a hash of the specified keypair
 
-shenc chat [keyfile] // enters into 'chat mode'
+shenc encrypt <keyfile> <input>
+    encrypts a string or file using specified keypair
+
+shenc decrypt <keyfile> <input>
+    decrypts a string or file using specified keypair
+
+shenc chat [keyfile]
+    enter `shenc` into 'chat mode', a chat-specific keypair
+    is auto-generated if one is not specified (ideal.)
 
 ===
 === NO-IP Support:
@@ -1066,14 +1068,13 @@ StackTrace: {ex.StackTrace}";
         {
             if (Debugger.IsAttached)
             {
-                var processId = (_debugLogCurrentProcess ?? (_debugLogCurrentProcess = Process.GetCurrentProcess())).Id;
-                Trace.WriteLine($"{DateTime.UtcNow:o} [{processId}] {text}");
+                Trace.WriteLine($"{DateTime.UtcNow:o} [{_processId}] {text}");
             }
         }
 
         #endregion TODO: use a real logging framework
 
-        private static RSA GenerateKeypair(string keyid = null)
+        private static RSA GenerateKeypair(string keyid = null, int keyLength = 8192)
         {
             keyid = keyid ?? $"{Guid.NewGuid()}";
             if (keyid.EndsWith(".prikey", StringComparison.OrdinalIgnoreCase) || keyid.EndsWith(".pubkey", StringComparison.OrdinalIgnoreCase))
@@ -1082,7 +1083,7 @@ StackTrace: {ex.StackTrace}";
             }
             Console.WriteLine("Generating a new key, this could take a while.. please be patient.");
             var rsa = RSA.Create();
-            rsa.KeySize = 8192;
+            rsa.KeySize = keyLength;
             {
                 var rsaParameters = rsa.ExportParameters(true);
                 var json = JsonConvert.SerializeObject(new
@@ -1132,7 +1133,7 @@ StackTrace: {ex.StackTrace}";
             return rsa;
         }
 
-        private static RSA LoadKeypair(string keyid, bool generateIfMissing = false)
+        private static RSA LoadKeypair(string keyid, bool generateIfMissing = false, int keyLength = 8192)
         {
             if (!File.Exists(keyid))
             {
@@ -1147,7 +1148,7 @@ StackTrace: {ex.StackTrace}";
                 else if (generateIfMissing)
                 {
                     keyid = $"{keyid}.prikey";
-                    return GenerateKeypair(keyid);
+                    return GenerateKeypair(keyid, keyLength);
                 }
                 else
                 {
