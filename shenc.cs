@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -17,13 +18,17 @@ namespace shenc
     /// <para>Generates a one-time keypair, used for encryption/decryption.</para>
     /// <para>PUBLIC  key stored to `.pubkey` file.</para>
     /// <para>PRIVATE key stored to `.prikey` file.</para>
-    /// <para>Now offers a "chat" mode.</para>
+    /// <para>Offers a "chat" mode with whitelist authorization by thumbprint.</para>
     /// </summary>
     internal class Program
     {
+        private static IDictionary<string, ClientState> _clients;
+
+        private static IDictionary<string/*thumbprint*/, string/*display alias*/> _whitelist;
+
         private static TcpListener _listener;
 
-        private static IDictionary<string, ClientState> _clients;
+        private static Process _debugLogCurrentProcess = null;
 
         private static void Main(string[] args)
         {
@@ -46,14 +51,16 @@ namespace shenc
                 switch (opcode)
                 {
                     case "CHAT":
-                        if (string.IsNullOrWhiteSpace(keyid))
                         {
-                            keyid = "chat";
+                            if (string.IsNullOrWhiteSpace(keyid))
+                            {
+                                keyid = "chat";
+                            }
+                            var rsa = LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
+                            var cancellationTokenSource = new CancellationTokenSource();
+                            SwitchToInteractiveMode(rsa, cancellationTokenSource)
+                                .Wait();
                         }
-                        var csp = LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
-                        var cancellationTokenSource = new CancellationTokenSource();
-                        SwitchToInteractiveMode(csp, cancellationTokenSource)
-                            .Wait();
                         return;
 
                     case "G":
@@ -68,6 +75,10 @@ namespace shenc
                         Decrypt(keyid, input);
                         break;
 
+                    case "H":
+                        Hash(keyid);
+                        break;
+
                     default:
                         PrintHelp();
                         return;
@@ -76,6 +87,14 @@ namespace shenc
             catch (Exception ex)
             {
                 Log(ex);
+            }
+        }
+
+        private static void Hash(string keyid)
+        {
+            using (var rsa = LoadKeypair(keyid, false))
+            {
+                var thumbprint = GetThumbprint(rsa);
             }
         }
 
@@ -145,8 +164,7 @@ namespace shenc
                         password,
                         out string result);
 
-                    Console.WriteLine($"=== DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}");
-                    Console.WriteLine(result);
+                    Log($"=== DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}> {result}");
                 }
             }
             catch (Exception ex)
@@ -156,9 +174,13 @@ namespace shenc
         }
 
         private static async Task SwitchToInteractiveMode(
-            RSA csp,
+            RSA rsa,
             CancellationTokenSource cancellationTokenSource)
         {
+            _whitelist = LoadWhitelist()
+                .ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value);
             _clients = new Dictionary<string, ClientState>(StringComparer.OrdinalIgnoreCase);
             while (!cancellationTokenSource.IsCancellationRequested)
             {
@@ -170,11 +192,12 @@ namespace shenc
                 var commandParts = command.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (commandParts.Length > 0)
                 {
-                    switch (commandParts[0].ToUpperInvariant())
+                    commandParts[0] = commandParts[0].ToUpperInvariant();
+                    switch (commandParts[0])
                     {
                         case "/HELP":
                         case "/?":
-                            PrintInteractiveHelp();
+                            PrintInteractiveHelp(commandParts.Length > 1 ? commandParts[1] : commandParts[0]);
                             break;
 
                         case "/QUIT":
@@ -194,60 +217,41 @@ namespace shenc
                             break;
 
                         case "/LISTEN":
-                        case "/HOST":
                             // TODO: control accept queue length
-                            // TODO: limit who to accept connections from (thumbprints?)
 #pragma warning disable 4014
                             StartListening(
                                 cancellationTokenSource,
                                 commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593,
-                                (client) =>
-                                {
-                                    var hostport = $"{client.HostName}:{client.PortNumber}";
-                                    lock (_clients)
-                                    {
-                                        if (_clients.TryGetValue(hostport, out ClientState existingClient))
-                                        {
-                                            StopClientWorker(existingClient);
-                                        }
-                                        _clients[hostport] = client;
-                                    }
-                                    StartClientWorker(client, csp)
-                                        .ContinueWith((t) =>
-                                        {
-                                            _clients.Remove(hostport);
-                                        });
-                                });
+                                (client) => OnClientAcceptCallback(client, rsa));
 #pragma warning restore 4014
                             break;
 
                         case "/DISCONNECT":
-                        case "/PART":
-                            foreach (var hostport in commandParts)
                             {
                                 lock (_clients)
                                 {
-                                    if (_clients.TryGetValue(hostport, out ClientState client))
+                                    var clients = _clients.Values
+                                        .Where(client => commandParts.Any(e =>
+                                               e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
+                                               || e.Equals($"{client.HostName}:{client.PortNumber}", StringComparison.OrdinalIgnoreCase)
+                                               || e.Equals(client.Thumbprint, StringComparison.OrdinalIgnoreCase)));
+                                    foreach (var client in clients)
                                     {
-                                        if (_clients.Remove(hostport))
-                                        {
 #pragma warning disable 4014
-                                            StopClientWorker(client);
+                                        StopClientWorker(client);
 #pragma warning restore 4014
-                                        }
                                     }
                                 }
                             }
                             break;
 
                         case "/CONNECT":
-                        case "/JOIN":
                             // treat each command input as a 'hostport'
                             commandParts.Skip(1).Select(async hostport =>
                             {
                                 try
                                 {
-                                    var client = await ConnectTo(hostport, csp);
+                                    var client = await ConnectTo(hostport, rsa);
                                 }
                                 catch (Exception ex)
                                 {
@@ -265,6 +269,97 @@ namespace shenc
                         case "/PING":
                             {
                                 // manual ping initiation for all hosts
+                                var clients = default(IEnumerable<Task>);
+                                lock (_clients)
+                                {
+                                    clients = _clients.Values
+                                        .Select(PING)
+                                        .ToArray(); // fire and forget.
+                                }
+                            }
+                            break;
+
+                        case "/ACCEPT":
+                            {
+                                if (commandParts.Length < 2)
+                                {
+                                    PrintInteractiveHelp(commandParts[0]);
+                                }
+                                else
+                                {
+                                    lock (_whitelist)
+                                    {
+                                        var thumbprint = commandParts[1];
+                                        _whitelist.TryGetValue(thumbprint, out string L_alias);
+                                        var alias = commandParts.Length > 2
+                                            ? commandParts[2]
+                                            : L_alias
+                                            ?? thumbprint;
+                                        _whitelist[thumbprint] = alias;
+                                        lock (_clients)
+                                        {
+                                            foreach (var client in _clients.Values)
+                                            {
+                                                if (client.Thumbprint.Equals(thumbprint, StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    client.Alias = alias;
+                                                }
+                                            }
+                                        }
+                                        StoreWhitelist();
+                                        Log($"ACCEPT: '{thumbprint}' => '{alias}'");
+                                    }
+                                }
+                            }
+                            break;
+
+                        case "/BAN":
+                            {
+                                // remove from whitelist, each command part would be a new thumbprint
+                                lock (_clients)
+                                    lock (_whitelist)
+                                    {
+                                        var clients = _clients.Values
+                                            .Where(client => commandParts.Any(e =>
+                                                e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
+                                                || e.Equals($"{client.HostName}:{client.PortNumber}", StringComparison.OrdinalIgnoreCase)
+                                                || e.Equals(client.Thumbprint, StringComparison.OrdinalIgnoreCase)))
+                                            .ToArray();
+
+                                        var blacklist = _whitelist
+                                            .Where(kvp => commandParts.Any(e =>
+                                                kvp.Key.Equals(e, StringComparison.OrdinalIgnoreCase))
+                                                || commandParts.Any(e => kvp.Value.Equals(e, StringComparison.OrdinalIgnoreCase)))
+                                            .Select(kvp => kvp.Key)
+                                            .ToArray();
+
+                                        foreach (var thumbprint in blacklist)
+                                        {
+                                            _whitelist.Remove(thumbprint);
+                                            Log($"BAN: {thumbprint}");
+                                        }
+
+                                        StoreWhitelist();
+
+                                        foreach (var client in clients)
+                                        {
+#pragma warning disable 4014
+                                            StopClientWorker(client);
+#pragma warning restore 4014
+                                        }
+                                    }
+                            }
+                            break;
+
+                        case "/WHITELIST":
+                            {
+                                lock (_whitelist)
+                                {
+                                    foreach (var thumbprint in _whitelist)
+                                    {
+                                        Log($"WHITELIST: {thumbprint}");
+                                    }
+                                }
                             }
                             break;
 
@@ -294,19 +389,24 @@ namespace shenc
                                 if (tasks.Any())
                                 {
                                     Task.WaitAll(tasks.ToArray());
-                                    tasks = failures.Select(async client =>
+                                    tasks = failures.Select(client =>
                                     {
                                         try
                                         {
-                                            if (_clients.Remove($"{client.HostName}:{client.PortNumber}"))
+                                            lock (_clients)
                                             {
-                                                await StopClientWorker(client);
+                                                if (_clients.Remove($"{client.HostName}:{client.PortNumber}"))
+                                                {
+                                                    DebugLog($"FAILED: Removed {client}");
+                                                    return StopClientWorker(client);
+                                                }
                                             }
                                         }
                                         catch (Exception ex)
                                         {
                                             Log(ex);
                                         }
+                                        return Task.CompletedTask;
                                     }).ToArray();
                                     if (tasks.Any())
                                     {
@@ -320,7 +420,85 @@ namespace shenc
             }
         }
 
-        private static async Task<ClientState> ConnectTo(string hostport, RSA csp)
+        private static void OnClientAcceptCallback(ClientState client, RSA rsa)
+        {
+            var hostport = $"{client.HostName}:{client.PortNumber}";
+            DebugLog($"{nameof(OnClientAcceptCallback)}({client},{GetThumbprint(rsa)}) via [{hostport}]");
+            lock (_clients)
+            {
+                if (_clients.TryGetValue(hostport, out ClientState existingClient))
+                {
+                    if (client.Thumbprint == existingClient.Thumbprint || string.IsNullOrEmpty(existingClient.Thumbprint))
+                    {
+                        _clients[hostport] = client;
+                        Log($"LISTEN: Replacing '{existingClient}' with '{client}'..");
+#pragma warning disable 4014
+                        StopClientWorker(existingClient);
+#pragma warning restore 4014
+                    }
+                    else
+                    {
+                        Log($"LISTEN: Denying reconnction attempt for {hostport} because thumbprint '{client.Thumbprint}' does not match prior thumbprint '{existingClient.Thumbprint}'.");
+                        return;
+                    }
+                }
+                else
+                {
+                    _clients[hostport] = client;
+                    Log($"LISTEN: Added '{client}'");
+                }
+            }
+            client.Worker = StartClientWorker(client, rsa);
+            client.Worker.ContinueWith((t) =>
+            {
+                lock (_clients)
+                {
+                    if (_clients.Remove(hostport))
+                    {
+                        DebugLog($"LISTEN: Removed {client}");
+                    }
+                }
+            });
+        }
+
+        private static void StoreWhitelist()
+        {
+            lock (_whitelist)
+            {
+                if (_whitelist.Count > 0)
+                {
+                    using (var writer = new StreamWriter(
+                        File.Open("whitelist.txt", FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)))
+                    {
+                        _whitelist.ToList().ForEach(kvp => writer.WriteLine($"{kvp.Key},{kvp.Value}"));
+                        writer.Flush();
+                        writer.Close();
+                    }
+                }
+            }
+        }
+
+        private static IEnumerable<KeyValuePair<string, string>> LoadWhitelist()
+        {
+            if (File.Exists("whitelist.txt"))
+            {
+                using (var reader = new StreamReader(
+                    File.Open("whitelist.txt", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)))
+                {
+                    var line = reader.ReadLine();
+                    while (line != null)
+                    {
+                        var parts = line.Split(',');
+                        var thumbprint = parts[0];
+                        var alias = parts.Length > 1 ? parts[1] : thumbprint;
+                        yield return new KeyValuePair<string, string>(thumbprint, alias);
+                        line = reader.ReadLine();
+                    }
+                }
+            }
+        }
+
+        private static async Task<ClientState> ConnectTo(string hostport, RSA rsa)
         {
             var parts = hostport.Split(new[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
             var hostName = parts[0];
@@ -328,51 +506,66 @@ namespace shenc
             hostport = $"{hostName}:{portNumber}";
             var tcpClient = new TcpClient();
             tcpClient.NoDelay = true;
-            Console.WriteLine($"Requesting connection to [{hostport}]..");
+            Log($"Requesting connection to [{hostport}]..");
             await tcpClient.ConnectAsync(hostName, portNumber);
             var client = default(ClientState);
             lock (_clients)
             {
-                if (_clients.TryGetValue(hostport, out client))
-                {
-#pragma warning disable 4014
-                    StopClientWorker(client);
-#pragma warning restore 4014
-                }
                 client = new ClientState
                 {
                     HostName = hostName,
                     PortNumber = portNumber,
                     TcpClient = tcpClient
                 };
-                _clients[hostport] = client;
+                if (_clients.TryGetValue(hostport, out ClientState existingClient))
+                {
+                    _clients[hostport] = client;
+                    Log($"CONNECT: Replacing '{existingClient}' with '{client}'..");
+#pragma warning disable 4014
+                    StopClientWorker(existingClient);
+#pragma warning restore 4014
+                }
+                else
+                {
+                    _clients[hostport] = client;
+                    Log($"CONNECT: Added '{client}'");
+                }
             }
 #pragma warning disable 4014
-            StartClientWorker(client, csp)
-                .ContinueWith((t) =>
+            client.Worker = StartClientWorker(client, rsa);
+            client.Worker.ContinueWith((t) =>
+            {
+                lock (_clients)
                 {
-                    _clients.Remove(hostport);
-                });
+                    if (_clients.Remove(hostport))
+                    {
+                        DebugLog($"LISTEN: Removed {client}");
+                    }
+                }
+            });
 #pragma warning restore 4014
             return client;
         }
 
         private static void Send(ClientState client, string message)
         {
+            DebugLog($"{nameof(Send)}({client},{message})");
             var data = Encoding.UTF8.GetBytes(message);
-            var edata = client.CSP == null ? data : client.CSP.Encrypt(data, RSAEncryptionPadding.Pkcs1);
+            var edata = client.RSA == null ? data : client.RSA.Encrypt(data, RSAEncryptionPadding.Pkcs1);
             client.TcpClient.Client.Send(BitConverter.GetBytes(edata.Length), SocketFlags.Partial);
             client.TcpClient.Client.Send(edata, SocketFlags.Partial);
         }
 
         private static async Task StartClientWorker(
             ClientState client,
-            RSA csp)
+            RSA rsa)
         {
             client.CancellationTokenSource = new CancellationTokenSource();
 
-            // send pubkey in the clear, this starts our conversation with remote
-            Send(client, csp.ToXmlString(false));
+            // exchange our pubkey in the clear, this starts our conversation with remote
+            var rsaParameters = rsa.ExportParameters(false);
+            var pubkey = JsonConvert.SerializeObject(rsaParameters);
+            Send(client, pubkey);
 
             var buf = new byte[1024 * 1024 * 48];
             var expectedSize = 0;
@@ -382,6 +575,7 @@ namespace shenc
             {
                 using (var stream = client.TcpClient.GetStream())
                 {
+                    var isSTUN = false;
                     while (!client.CancellationTokenSource.IsCancellationRequested)
                     {
                         if (expectedSize == 0)
@@ -390,6 +584,15 @@ namespace shenc
                             if (availableCount >= 4)
                             {
                                 expectedSize = BitConverter.ToInt32(buf, readOffset);
+                                if (expectedSize == 0)
+                                {
+                                    isSTUN = true;
+                                    expectedSize = 4;
+                                }
+                                else
+                                {
+                                    isSTUN = false;
+                                }
                                 readOffset += 4;
                                 if (expectedSize > (buf.Length - readOffset))
                                 {
@@ -403,28 +606,62 @@ namespace shenc
                             expectedSize = 0;
                             Array.Copy(buf, readOffset, edata, 0, edata.Length);
                             readOffset += edata.Length;
-                            if (client.CSP == null)
+                            if (client.RSA == null)
                             {
-                                // expect to receive CSP from remote
-                                var xml = Encoding.UTF8.GetString(edata);
-                                client.CSP = new RSACryptoServiceProvider(new CspParameters { ProviderType = 1 });
-                                client.CSP.FromXmlString(xml);
-                                Console.WriteLine($"Connected to [{client.HostName}:{client.PortNumber}]");
+                                // expect to receive pubkey from remote in the clear
+                                var clientRSA = RSA.Create();
+                                clientRSA.ImportParameters(
+                                    JsonConvert.DeserializeObject<RSAParameters>(
+                                        Encoding.UTF8.GetString(edata)));
+                                client.RSA = clientRSA; // late assignment avoids race condition (invalid thumbprint result) from interstitial before import completes.
+                                // check client pubkey thumbprint against whitelist, if not in whitelist then force a disconnect
+                                lock (_whitelist)
+                                {
+                                    if (_whitelist.TryGetValue(client.Thumbprint, out string alias))
+                                    {
+                                        Log($"Connected to {client}");
+                                    }
+                                    else
+                                    {
+                                        Log($"Rejecting {client}, thumbprint is not authorized.");
+                                        Log($"You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.");
+                                        break;
+                                    }
+                                }
                             }
                             else
                             {
-                                var data = csp.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
-                                var message = Encoding.UTF8.GetString(data);
-                                Console.WriteLine($"[{client.HostName}:{client.PortNumber}] {message}");
+                                var data = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+                                if (isSTUN)
+                                {
+                                    // TODO: stun
+                                }
+                                else
+                                {
+                                    var message = Encoding.UTF8.GetString(data);
+                                    Log($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {client}> {message}");
+                                }
                             }
                         }
-                        var count = buf.Length - writeOffset;
-                        count = (count > 128) ? 128 : count;
-                        var cb = await stream.ReadAsync(buf, writeOffset, count);
+                        var count = (expectedSize > 0)
+                            ? expectedSize
+                            : 4;
+                        var cb = 0;
+                        try
+                        {
+                            // TODO: implement PING, and then set a timeout for this read op that is (ping_interval*1.5) (ie. if no read within ping interval + grace period assume a dead link.)
+                            var readTimeoutToken = new CancellationTokenSource(TimeSpan.FromMinutes(2)).Token;
+                            cb = await stream.ReadAsync(buf, writeOffset, count, readTimeoutToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            // NOP: the reasons for a failed read are all valid, and should result in a disconnect sequence
+                            break;
+                        }
                         writeOffset += cb;
                         if (cb == 0)
                         {
-                            Console.WriteLine($"Disconnection request detected for [{client.HostName}:{client.PortNumber}]");
+                            Log($"WORKER: Disconnection request detected for [{client.HostName}:{client.PortNumber}]");
                             // remote closure initiated
                             client.CancellationTokenSource.Cancel();
                             break;
@@ -438,10 +675,11 @@ namespace shenc
                         {
                             throw new RankException($"Internal buffer underflow detected for [{client.HostName}:{client.PortNumber}]");
                         }
-                        else if (readOffset == writeOffset)
+                        else if (readOffset == writeOffset && expectedSize == 0)
                         {
-                            //readOffset = 0;
-                            //writeOffset = 0;
+                            // the logic basically states if we're not expecting data, reset buffer state to avoid overflow
+                            readOffset = 0;
+                            writeOffset = 0;
                         }
                     }
                     stream.Close(10 * 1000);
@@ -456,8 +694,37 @@ namespace shenc
                 client.TcpClient.Close();
                 client.TcpClient.Dispose();
                 client.TcpClient = null;
-                Console.WriteLine($"Disconnected from [{client.HostName}:{client.PortNumber}]");
+                Log($"WORKER: Disconnected from client");
             }
+        }
+
+        private static string GetThumbprint(RSA rsa)
+        {
+            var result = default(string);
+            using (var sha1 = SHA1.Create())
+            {
+                var rsaParameters = rsa.ExportParameters(false);
+                var json = JsonConvert.SerializeObject(rsaParameters);
+                var data = Encoding.UTF8.GetBytes(json);
+                var hashed = sha1.ComputeHash(data);
+                result = string.Join(":", hashed.Select(e => e.ToString("X2")).ToArray()).ToLower();
+            }
+            return result;
+        }
+
+        private static string GetAlias(string thumbprint)
+        {
+            lock (_whitelist)
+            {
+                foreach (var kvp in _whitelist)
+                {
+                    if (kvp.Key.Equals(thumbprint, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return kvp.Value;
+                    }
+                }
+            }
+            return thumbprint;
         }
 
         private static async Task PING(ClientState client)
@@ -474,15 +741,15 @@ namespace shenc
         {
             if (_listener == null)
             {
-                _listener = new TcpListener(System.Net.IPAddress.Any, port);
+                _listener = new TcpListener(IPAddress.Any, port);
                 _listener.Start(10);
-                Console.WriteLine($"Listening for clients on port '{port}'..");
+                Log($"LISTEN: Listening for connections on port '{port}'..");
                 while (!cancellationTokenSource.IsCancellationRequested)
                 {
                     var client = await _listener.AcceptTcpClientAsync();
                     client.NoDelay = true;
                     var remoteEndPoint = (client.Client.RemoteEndPoint as IPEndPoint);
-                    Console.WriteLine($"Connection request from [{remoteEndPoint.Address}:{remoteEndPoint.Port}]..");
+                    DebugLog($"Connection request from [{remoteEndPoint.Address}:{remoteEndPoint.Port}]");
                     onAcceptCallback(new ClientState
                     {
                         HostName = $"{remoteEndPoint.Address}",
@@ -496,61 +763,297 @@ namespace shenc
 
         private static void StopListening()
         {
-            if (_listener != null)
+            DebugLog($"{nameof(StopListening)}()");
+            var listener = _listener;
+            _listener = null;
+            if (listener != null)
             {
-                if (_clients != null && _clients.Count > 0)
+                try
                 {
-                    // NOTE: this initiates asynchronous 'client worker
-                    //       stops' for all clients, and then waits on all of
-                    //       them to complete. it is done this way rather
-                    //       than one at a time so any delays can be
-                    //       overlapped (ie. it takes less time to shutdown
-                    //       for a large number of connections)
-                    Task.WaitAll(
-                        _clients
-                            .Values
-                            .Select(client => StopClientWorker(client))
-                            .ToArray());
-                    _clients.Clear();
-                    _clients = null;
+                    listener.Stop();
+                }
+                catch (Exception ex)
+                {
+                    Log(ex);
                 }
             }
+            Log("NOLISTEN: Stopped listening.");
+            // TODO: move the following into a "disconnect all" variant of "/DISCONNECT"
+            /*
+            if (_clients != null && _clients.Count > 0)
+            {
+                // NOTE: this initiates asynchronous 'client worker
+                //       stops' for all clients, and then waits on all of
+                //       them to complete. it is done this way rather
+                //       than one at a time so any delays can be
+                //       overlapped (ie. it takes less time to shutdown
+                //       for a large number of connections)
+                Task.WaitAll(
+                    _clients
+                        .Values
+                        .Select(client => StopClientWorker(client))
+                        .ToArray());
+                _clients.Clear();
+            }
+            */
         }
 
         private static async Task StopClientWorker(ClientState client)
         {
-            var clientWorker = client.Worker;
-            client.CancellationTokenSource.Cancel();
-            if (clientWorker != null)
+            DebugLog($"{nameof(StopClientWorker)}({client})");
+            try
             {
-                await clientWorker;
+                var clientWorker = client.Worker;
+                client.CancellationTokenSource.Cancel();
+                if (clientWorker != null)
+                {
+                    await clientWorker;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
             }
         }
 
-        private static void PrintInteractiveHelp()
+        #region Interactive Help
+
+        private static void PrintInteractiveHelp(string command)
         {
-            Console.WriteLine();
-            Console.WriteLine("/HELP");
-            Console.WriteLine();
-            Console.WriteLine("/LISTEN <port-number>");
-            Console.WriteLine("/NOLISTEN");
-            Console.WriteLine();
-            Console.WriteLine("/CONNECT <host>:<port>");
-            Console.WriteLine("/DISCONNECT <host>:<port>");
-            Console.WriteLine();
-            Console.WriteLine("/QUIT");
-            Console.WriteLine();
+            switch (command.Trim('/'))
+            {
+                case "LISTEN":
+                    Console.WriteLine(@"
+
+Summary:
+    Listen for connections on the specified port number.
+
+Usage:
+    /LISTEN [port-number]
+
+    port-number = (optional) The Port Number to listen for
+        connections on, defaults to port 18593.
+
+ NOTE: Listening on more than one port is not supported.
+
+ NOTE: The port may need to be added to your firewall.
+
+See also: /ACCEPT, /NOLISTEN
+");
+                    break;
+
+                case "NOLISTEN":
+                    Console.WriteLine(@"
+
+Summary:
+    Stop listening for connections.
+
+Usage:
+    /NOLISTEN
+
+See also: /DISCONNECT, /BAN, /LISTEN
+");
+                    break;
+
+                case "CONNECT":
+                    Console.WriteLine(@"
+
+Summary:
+    Connect a remote system.
+
+Usage:
+    /CONNECT <host[:port]>
+
+    host = (required) a hostname or ip address of the
+        remote system to connect to.
+
+    port = (optional) The Port Number to listen for
+        connections on, defaults to port 18593.
+
+See also: /DISCONNECT
+");
+                    break;
+
+                case "DISCONNECT":
+                    Console.WriteLine(@"
+
+Summary:
+    Disconnect a remote system.
+
+Usage:
+    /DISCONNECT <alias|thumbprint|<host[:port]>]>
+
+    Only 1 the 3 parameters shown are required:
+
+    alias = (required) an alias previously assigned
+        to a thumbrint associated with the remote 
+        system.
+
+    -or-
+
+    thumbprint = (required) a thumbrint associated 
+        with the remote system.
+
+    -or-
+
+    host = (required) a hostname or ip address of the
+        remote system to connect to.
+
+    port = (optional) The Port Number to listen for
+        connections on, defaults to port 18593.
+
+See also: /DISCONNECT
+");
+                    break;
+
+                case "ACCEPT":
+                    Console.WriteLine(@"
+
+Summary:
+    Accept a thumbprint/remote/client, and optionally
+    assign it an alias, by adding it to the WHITELIST.
+
+Usage:
+    /ACCEPT <thumbprint> [alias]
+
+    thumbprint = (required) a thumbrint associated 
+        with the remote system.
+
+    alias = (optional) an alias previously assigned
+        to a thumbrint associated with the remote 
+        system.
+
+See also: /BAN
+");
+                    break;
+
+                case "BAN":
+                    Console.WriteLine(@"
+
+Summary:
+    Ban a thumbprint/remote/client by removing it from
+    the WHITELIST.
+
+Usage:
+    /BAN <alias|thumbprint|<host[:port]>>
+
+    alias = (required) an alias previously assigned
+        to a thumbrint associated with the remote 
+        system.
+
+    -or-
+
+    thumbprint = (required) a thumbrint associated 
+        with the remote system.
+
+    -or-
+
+    host = (required) a hostname or ip address of the
+        remote system to connect to.
+
+    port = (optional) The Port Number to listen for
+        connections on, defaults to port 18593.
+
+See also: /BAN
+");
+                    break;
+
+                case "WHITELIST":
+                    Console.WriteLine(@"
+
+Summary:
+    Displays the current WHITELIST entries.
+
+Usage:
+    /WHITELIST
+
+See also: /ACCEPT, /BAN
+");
+                    break;
+
+                case "QUIT":
+                    Console.WriteLine(@"
+
+Summary:
+    Quit, gracefully disconnecting all remotes.
+
+Usage:
+    /QUIT
+");
+                    break;
+
+                case "HELP":
+                default:
+                    Console.WriteLine(@"
+
+/HELP [command]
+
+/LISTEN [port-number]
+/NOLISTEN
+
+/CONNECT <host>:<port>
+/DISCONNECT <alias|<host>:<port>>
+
+/ACCEPT <thumbprint> [alias]
+/BAN <thumbprint|alias|<host>:<port>>
+/WHITELIST
+
+/QUIT
+");
+                    break;
+            }
+        }
+
+        private static void PrintHelp() =>
+            Console.WriteLine(@"
+shenc g //generates a new keypair
+
+shenc e [keyfile] [input] // encrypts a string or file using specified keypair
+shenc d [keyfile] [input] // decrypts a string or file using specified keypair
+
+shenc chat [keyfile] // enters into 'chat mode'
+
+===
+=== NO-IP Support:
+===
+=== In your app config, add two <appSettings/> keys:
+===
+<appSettings>
+    <add key=""no-ip:hostname"" value=""w00tcakes.ddns.net""/>
+    <add key=""no-ip:auth"" value=""UgkUnzZvIbmSX9Fp5ejRBtgpwsTHV/g+QB0=""/>
+    <!-- optional keys, and their defaults
+    <add key=""no-ip:key"" value=""chat""/>
+    <add key=""no-ip:address"" value=""127.0.0.1""/>
+    -->
+</appSettings>
+=== You can create an encrypted `auth` value like so:
+shenc e chat noip-username:noip-password
+=== Then copy-paste the base64-encoded value into your config.
+=== ");
+
+        #endregion Interactive Help
+
+        #region TODO: use a real logging framework
+
+        private static void Log(string text)
+        {
+            Console.WriteLine(text);
         }
 
         private static void Log(Exception ex)
         {
             try
             {
+                var prefix = "";
                 while (ex != null)
                 {
-                    Console.Error.WriteLine($"Exception: {ex.Message}");
-                    Console.Error.WriteLine($"StackTrace: {ex.StackTrace}");
+                    var text = $@"{prefix}Exception: {ex.GetType().FullName}
+Message: {ex.Message}
+StackTrace: {ex.StackTrace}";
+                    Console.Error.WriteLine(text);
+                    DebugLog(text);
                     ex = ex.InnerException;
+                    prefix = "Inner";
                 }
             }
             catch (Exception L_ex)
@@ -559,63 +1062,74 @@ namespace shenc
             }
         }
 
-        private static void PrintHelp()
+        private static void DebugLog(string text)
         {
-            Console.WriteLine();
-            Console.WriteLine("shenc g //generates a new keypair");
-            Console.WriteLine();
-            Console.WriteLine("shenc e [keyfile] [input] // encrypts a string or file using specified keypair");
-            Console.WriteLine("shenc d [keyfile] [input] // decrypts a string or file using specified keypair");
-            Console.WriteLine();
-            Console.WriteLine("shenc chat [keyfile] // enters into 'chat mode'");
-            Console.WriteLine();
-            Console.WriteLine("=== ");
-            Console.WriteLine("=== NO-IP Support:");
-            Console.WriteLine("=== ");
-            Console.WriteLine("=== In your app config, add two <appSettings/> keys:");
-            Console.WriteLine("=== ");
-            Console.WriteLine(@"    <appSettings>
-        <add key=""no-ip:hostname"" value=""w00tcakes.ddns.net""/>
-        <add key=""no-ip:auth"" value=""UDkgkUmnzZMvIbmSLX9Ftp5ejFRB5tgpwsTrHV/8g+QCB0=""/>
-        <!-- optional keys, and their defauls
-        <add key=""no-ip:key"" value=""chat""/>
-        <add key=""no-ip:address"" value=""127.0.0.1""/>
-        -->
-    </appSettings>");
-            Console.WriteLine();
-            Console.WriteLine("=== You can create an encrypted `auth` value like so:");
-            Console.WriteLine("shenc e chat noip-username:noip-password");
-            Console.WriteLine("=== Then copy-paste the base64-encoded value into your config.");
-            Console.WriteLine("=== ");
+            if (Debugger.IsAttached)
+            {
+                var processId = (_debugLogCurrentProcess ?? (_debugLogCurrentProcess = Process.GetCurrentProcess())).Id;
+                Trace.WriteLine($"{DateTime.UtcNow:o} [{processId}] {text}");
+            }
         }
+
+        #endregion TODO: use a real logging framework
 
         private static RSA GenerateKeypair(string keyid = null)
         {
             keyid = keyid ?? $"{Guid.NewGuid()}";
-            var cspParameters = new CspParameters
+            if (keyid.EndsWith(".prikey", StringComparison.OrdinalIgnoreCase) || keyid.EndsWith(".pubkey", StringComparison.OrdinalIgnoreCase))
             {
-                ProviderType = 1,
-                Flags = CspProviderFlags.UseArchivableKey,
-                KeyNumber = (int)KeyNumber.Exchange
-            };
-            var csp = new RSACryptoServiceProvider(cspParameters);
-            var prikey = csp.ToXmlString(true);
-            var pubkey = csp.ToXmlString(false);
-            using (var prikeyFile = File.CreateText($"{keyid}.prikey"))
-            {
-                prikeyFile.Write(prikey);
-                prikeyFile.Flush();
-                prikeyFile.Close();
+                keyid = keyid.Remove(keyid.Length - 7);
             }
-            Console.WriteLine($"Generated PRIKEY file: {keyid}.prikey");
-            using (var pubkeyFile = File.CreateText($"{keyid}.pubkey"))
+            Console.WriteLine("Generating a new key, this could take a while.. please be patient.");
+            var rsa = RSA.Create();
+            rsa.KeySize = 8192;
             {
-                pubkeyFile.Write(pubkey);
-                pubkeyFile.Flush();
-                pubkeyFile.Close();
+                var rsaParameters = rsa.ExportParameters(true);
+                var json = JsonConvert.SerializeObject(new
+                {
+                    // dynamic type because `RSAParameters` does not serialize as expected
+                    rsaParameters.D,
+                    rsaParameters.DP,
+                    rsaParameters.DQ,
+                    rsaParameters.Exponent,
+                    rsaParameters.InverseQ,
+                    rsaParameters.Modulus,
+                    rsaParameters.P,
+                    rsaParameters.Q
+                }, Formatting.Indented);
+                var prikey = Encoding.UTF8.GetBytes(json);
+                using (var file = File.Open($"{keyid}.prikey", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    file.Write(prikey, 0, prikey.Length);
+                    file.Flush();
+                    file.Close();
+                }
+                Console.WriteLine($"Generated PRIKEY file: {keyid}.prikey");
             }
-            Console.WriteLine($"Generated PUBKEY file: {keyid}.pubkey");
-            return csp;
+            {
+                var rsaParameters = rsa.ExportParameters(false);
+                var json = JsonConvert.SerializeObject(new
+                {
+                    // dynamic type because `RSAParameters` does not serialize as expected
+                    rsaParameters.D,
+                    rsaParameters.DP,
+                    rsaParameters.DQ,
+                    rsaParameters.Exponent,
+                    rsaParameters.InverseQ,
+                    rsaParameters.Modulus,
+                    rsaParameters.P,
+                    rsaParameters.Q
+                }, Formatting.Indented);
+                var pubkey = Encoding.UTF8.GetBytes(json);
+                using (var file = File.Open($"{keyid}.pubkey", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    file.Write(pubkey, 0, pubkey.Length);
+                    file.Flush();
+                    file.Close();
+                }
+                Console.WriteLine($"Generated PUBKEY file: {keyid}.pubkey");
+            }
+            return rsa;
         }
 
         private static RSA LoadKeypair(string keyid, bool generateIfMissing = false)
@@ -640,38 +1154,53 @@ namespace shenc
                     throw new FileNotFoundException(keyid);
                 }
             }
-            var csp = new RSACryptoServiceProvider(new CspParameters
+            using (var file = File.Open(keyid, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                ProviderType = 1
-            });
-            using (var file = File.OpenText(keyid))
-            {
-                var xml = file.ReadToEnd();
-                csp.FromXmlString(xml);
+                var buf = new byte[file.Length];
+                var offset = 0;
+                while (offset < buf.Length)
+                {
+                    offset += file.Read(buf, offset, buf.Length);
+                }
+                var json = Encoding.UTF8.GetString(buf);
+                var parameters = JsonConvert.DeserializeObject<dynamic>(json); // dynamic type because `RSAParameters` does not deserialize as expected
+                var rsaParameters = new RSAParameters
+                {
+                    D = parameters.D,
+                    DP = parameters.DP,
+                    DQ = parameters.DQ,
+                    Exponent = parameters.Exponent,
+                    InverseQ = parameters.InverseQ,
+                    Modulus = parameters.Modulus,
+                    P = parameters.P,
+                    Q = parameters.Q
+                };
+                var rsa = RSA.Create();
+                rsa.ImportParameters(rsaParameters);
                 file.Close();
+                Console.WriteLine($"Loaded Key '{keyid}'");
+                return rsa;
             }
-            Console.WriteLine($"Loaded Key '{keyid}'");
-            return csp;
         }
 
         private static void EncryptText(string keyfile, string input)
         {
-            var csp = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyfile);
             var data = Encoding.UTF8.GetBytes(input);
-            var edata = csp.Encrypt(data, RSAEncryptionPadding.Pkcs1);
+            var edata = rsa.Encrypt(data, RSAEncryptionPadding.Pkcs1);
             var output = Convert.ToBase64String(edata, Base64FormattingOptions.None);
             Console.WriteLine(output);
         }
 
         private static void EncryptFile(string keyfile, string input)
         {
-            var csp = LoadKeypair(keyfile);
-            using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            var rsa = LoadKeypair(keyfile);
+            using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
                 var data = new byte[infile.Length];
                 infile.Read(data, 0, data.Length);
-                var edata = csp.Encrypt(data, RSAEncryptionPadding.Pkcs1);
-                using (var outfile = File.Open($"{input}.out", FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+                var edata = rsa.Encrypt(data, RSAEncryptionPadding.Pkcs1);
+                using (var outfile = File.Open($"{input}.out", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
                     outfile.Write(edata, 0, edata.Length);
                     outfile.Flush();
@@ -684,17 +1213,17 @@ namespace shenc
 
         private static void DecryptText(string keyfile, string input)
         {
-            var csp = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyfile);
             var edata = Convert.FromBase64String(input);
-            var data = csp.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+            var data = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
             var output = Encoding.UTF8.GetString(data);
             Console.WriteLine(output);
         }
 
         private static void DecryptFile(string keyfile, string input)
         {
-            var csp = LoadKeypair(keyfile);
-            using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            var rsa = LoadKeypair(keyfile);
+            using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
                 if (input.EndsWith(".out"))
                 {
@@ -702,8 +1231,8 @@ namespace shenc
                 }
                 var edata = new byte[infile.Length];
                 infile.Read(edata, 0, edata.Length);
-                var data = csp.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
-                using (var outfile = File.Open($"{input}", FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+                var data = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+                using (var outfile = File.Open($"{input}", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
                     outfile.Write(data, 0, data.Length);
                     outfile.Flush();
@@ -738,19 +1267,78 @@ namespace shenc
             }
         }
 
-        private sealed class ClientState
+        private sealed class ClientState :
+            IDisposable
         {
+            private RSA _rsa;
+
+            ~ClientState()
+            {
+                Dispose(false);
+            }
+
             public CancellationTokenSource CancellationTokenSource { get; set; }
+
+            public string Alias { get; set; }
 
             public string HostName { get; set; }
 
             public int PortNumber { get; set; }
 
-            public RSA CSP { get; set; }
+            public RSA RSA
+            {
+                get
+                {
+                    return _rsa;
+                }
+                set
+                {
+                    if (_rsa != value)
+                    {
+                        _rsa = value;
+                        if (_rsa != null)
+                        {
+                            Thumbprint = GetThumbprint(_rsa);
+                            Alias = GetAlias(Thumbprint);
+                        }
+                        else
+                        {
+                            Thumbprint = "(null)";
+                            Alias = $"{HostName}:{PortNumber}";
+                        }
+                    }
+                }
+            }
+
+            public string Thumbprint { get; set; }
 
             public TcpClient TcpClient { get; set; }
 
             public Task Worker { get; set; }
+
+            public override string ToString()
+            {
+                return $"{Alias ?? Thumbprint ?? HostName + ":" + PortNumber}";
+            }
+
+            public void Dispose()
+            {
+                Dispose(true);
+            }
+
+            private void Dispose(bool disposing)
+            {
+                try
+                {
+                    var rsa = RSA;
+                    RSA = null;
+                    if (rsa != null)
+                    {
+                        rsa.Dispose();
+                    }
+                }
+                catch { /* NOP */ }
+            }
         }
     }
 }
