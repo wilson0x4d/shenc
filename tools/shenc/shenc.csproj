@@ -5,9 +5,19 @@
     <TargetFramework>netcoreapp2.1</TargetFramework>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="4.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\CQ.Crypto\CQ.Crypto.csproj" />
+    <ProjectReference Include="..\..\CQ.Network\CQ.Network.csproj" />
+    <ProjectReference Include="..\..\CQ.Settings\CQ.Settings.csproj" />
   </ItemGroup>
 
 </Project>
