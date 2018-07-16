@@ -1,29 +1,47 @@
-﻿using Newtonsoft.Json;
+﻿using CQ.Crypto;
+using CQ.Network;
+using CQ.Settings;
 using System;
-using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
+using X4D.Diagnostics.Configuration;
+using X4D.Diagnostics.Logging;
 
 namespace shenc
 {
     partial class Program
     {
-        private static void SwitchToInteractiveMode(
-    RSA rsa,
-    CancellationTokenSource cancellationTokenSource)
+        private static Whitelist _whitelist;
+
+        private static Crypt _crypt;
+
+        private static Netwk _netwk;
+
+        private static int _processId;
+
+        static Program()
         {
-            _whitelist = LoadWhitelist()
-                .ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => kvp.Value);
-            _clients = new Dictionary<string, ClientState>(StringComparer.OrdinalIgnoreCase);
+            var section = SystemDiagnosticsBootstrapper.Configure()
+                as ConfigurationSection;
+
+            _crypt = new Crypt();
+        }
+
+        private static void SwitchToInteractiveMode(
+            RSA rsa,
+            CancellationTokenSource cancellationTokenSource)
+        {
+            _whitelist = new Whitelist();
+            _whitelist.LoadWhitelist();
+
+            _crypt = new Crypt();
+
+            _netwk = new Netwk(_crypt, _whitelist);
+            _netwk.UpdateDynamicDns();
+
             while (!cancellationTokenSource.IsCancellationRequested)
             {
                 var command = Console.ReadLine();
@@ -45,11 +63,7 @@ namespace shenc
                         case "/QUIT":
                             try
                             {
-                                // shutdown all client workers
-                                lock (_clients)
-                                {
-                                    Task.WaitAll(_clients.Values.Select(StopClientWorker).ToArray());
-                                }
+                                _netwk.ShutdownAllClientWorkers();
                             }
                             finally
                             {
@@ -61,30 +75,16 @@ namespace shenc
                         case "/LISTEN":
                             // TODO: control accept queue length
 #pragma warning disable 4014
-                            StartListening(
+                            _netwk.StartListening(
                                 cancellationTokenSource,
                                 commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593,
-                                (client) => OnClientAcceptCallback(client, rsa));
+                                (client) => _netwk.OnClientAcceptCallback(client, rsa));
 #pragma warning restore 4014
                             break;
 
                         case "/DISCONNECT":
                             {
-                                lock (_clients)
-                                {
-                                    var clients = _clients.Values
-                                        .Where(client => commandParts.Any(e =>
-                                               e == "*" // accept a wildcard for "all" clients
-                                               || e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
-                                               || e.Equals($"{client.HostName}:{client.PortNumber}", StringComparison.OrdinalIgnoreCase)
-                                               || e.Equals(client.Thumbprint, StringComparison.OrdinalIgnoreCase)));
-                                    foreach (var client in clients)
-                                    {
-#pragma warning disable 4014
-                                        StopClientWorker(client);
-#pragma warning restore 4014
-                                    }
-                                }
+                                _netwk.DisconnectAllClients(commandParts);
                             }
                             break;
 
@@ -94,11 +94,11 @@ namespace shenc
                             {
                                 try
                                 {
-                                    var client = await ConnectTo(hostport, rsa);
+                                    var client = await _netwk.ConnectTo(hostport, rsa);
                                 }
                                 catch (Exception ex)
                                 {
-                                    Log(ex);
+                                    ex.Log();
                                 }
                             })
                             .ToArray();
@@ -106,91 +106,24 @@ namespace shenc
 
                         case "/NOLISTEN":
                         case "/NOHOST":
-                            StopListening();
+                            _netwk.StopListening();
                             break;
 
                         case "/PING":
                             {
-                                // manual ping initiation for all hosts
-                                var clients = default(IEnumerable<Task>);
-                                lock (_clients)
-                                {
-                                    clients = _clients.Values
-                                        .Select(PING)
-                                        .ToArray(); // fire and forget.
-                                }
+                                _netwk.PingAllClients();
                             }
                             break;
 
                         case "/ACCEPT":
                             {
-                                if (commandParts.Length < 2)
-                                {
-                                    PrintInteractiveHelp(commandParts[0]);
-                                }
-                                else
-                                {
-                                    lock (_whitelist)
-                                    {
-                                        var thumbprint = commandParts[1];
-                                        _whitelist.TryGetValue(thumbprint, out string L_alias);
-                                        var alias = commandParts.Length > 2
-                                            ? commandParts[2]
-                                            : L_alias
-                                            ?? thumbprint;
-                                        _whitelist[thumbprint] = alias;
-                                        lock (_clients)
-                                        {
-                                            foreach (var client in _clients.Values)
-                                            {
-                                                if (client.Thumbprint.Equals(thumbprint, StringComparison.OrdinalIgnoreCase))
-                                                {
-                                                    client.Alias = alias;
-                                                }
-                                            }
-                                        }
-                                        StoreWhitelist();
-                                        Log($"ACCEPT: '{thumbprint}' => '{alias}'");
-                                    }
-                                }
+                                _netwk.AcceptClient(commandParts);
                             }
                             break;
 
                         case "/BAN":
                             {
-                                // remove from whitelist, each command part would be a new thumbprint
-                                lock (_clients)
-                                    lock (_whitelist)
-                                    {
-                                        var clients = _clients.Values
-                                            .Where(client => commandParts.Any(e =>
-                                                e.Equals(client.Alias, StringComparison.InvariantCultureIgnoreCase)
-                                                || e.Equals($"{client.HostName}:{client.PortNumber}", StringComparison.OrdinalIgnoreCase)
-                                                || e.Equals(client.Thumbprint, StringComparison.OrdinalIgnoreCase)))
-                                            .ToArray();
-
-                                        var blacklist = _whitelist
-                                            .Where(kvp => commandParts.Any(e =>
-                                                kvp.Key.Equals(e, StringComparison.OrdinalIgnoreCase))
-                                                || commandParts.Any(e => kvp.Value.Equals(e, StringComparison.OrdinalIgnoreCase)))
-                                            .Select(kvp => kvp.Key)
-                                            .ToArray();
-
-                                        foreach (var thumbprint in blacklist)
-                                        {
-                                            _whitelist.Remove(thumbprint);
-                                            Log($"BAN: {thumbprint}");
-                                        }
-
-                                        StoreWhitelist();
-
-                                        foreach (var client in clients)
-                                        {
-#pragma warning disable 4014
-                                            StopClientWorker(client);
-#pragma warning restore 4014
-                                        }
-                                    }
+                                _netwk.Ban(commandParts);
                             }
                             break;
 
@@ -200,70 +133,20 @@ namespace shenc
                                 {
                                     foreach (var thumbprint in _whitelist)
                                     {
-                                        Log($"WHITELIST: {thumbprint}");
+                                        ($"WHITELIST: {thumbprint}").Log();
                                     }
                                 }
                             }
                             break;
 
                         default:
-                            {
-                                // write message to all connected clients (like a chat room)
-                                var tasks = default(IEnumerable<Task>);
-                                var failures = new List<ClientState>();
-                                lock (_clients)
-                                {
-                                    tasks = _clients.Values
-                                        .Select(client => Task.Factory.StartNew(async () =>
-                                        {
-                                            try
-                                            {
-                                                Send(client, command);
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                Log(ex);
-                                                failures.Add(client);
-                                            }
-                                            await Task.CompletedTask;
-                                        }))
-                                        .ToArray();
-                                }
-                                if (tasks.Any())
-                                {
-                                    Task.WaitAll(tasks.ToArray());
-                                    tasks = failures.Select(client =>
-                                    {
-                                        try
-                                        {
-                                            lock (_clients)
-                                            {
-                                                if (_clients.Remove($"{client.HostName}:{client.PortNumber}"))
-                                                {
-                                                    DebugLog($"FAILED: Removed {client}");
-                                                    return StopClientWorker(client);
-                                                }
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            Log(ex);
-                                        }
-                                        return Task.CompletedTask;
-                                    }).ToArray();
-                                    if (tasks.Any())
-                                    {
-                                        Task.WaitAll(tasks.ToArray());
-                                    }
-                                }
-                            }
+                            _netwk.SendChatMessage(command);
                             break;
                     }
                 }
             }
         }
 
-        private static int _processId;
         private static void Main(string[] args)
         {
             _processId = Process.GetCurrentProcess().Id;
@@ -274,7 +157,7 @@ namespace shenc
                     PrintHelp();
                     return;
                 }
-                UpdateDynamicDns();
+
                 var opcode = args[0].ToUpperInvariant();
                 var keyid = args.Length > 1
                     ? args[1]
@@ -291,7 +174,7 @@ namespace shenc
                             {
                                 keyid = "chat";
                             }
-                            var rsa = LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
+                            var rsa = _crypt.LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
                             var cancellationTokenSource = new CancellationTokenSource();
                             SwitchToInteractiveMode(rsa, cancellationTokenSource);
                         }
@@ -299,22 +182,22 @@ namespace shenc
 
                     case "GENKEYS":
                     case "G":
-                        GenerateKeypair(keyid, int.Parse(input ?? "8192"));
+                        _crypt.GenerateKeypair(keyid, int.Parse(input ?? "8192"));
                         return;
 
                     case "ENCRYPT":
                     case "E":
-                        Encrypt(keyid, input);
+                        _crypt.Encrypt(keyid, input);
                         break;
 
                     case "DECRYPT":
                     case "D":
-                        Decrypt(keyid, input);
+                        _crypt.Decrypt(keyid, input);
                         break;
 
                     case "HASH":
                     case "H":
-                        Hash(keyid);
+                        _crypt.Hash(keyid);
                         break;
 
                     default:
@@ -324,9 +207,10 @@ namespace shenc
             }
             catch (Exception ex)
             {
-                Log(ex);
+                ex.Log();
             }
         }
+
         #region Interactive Help
 
         private static void PrintInteractiveHelp(string command)
@@ -397,12 +281,12 @@ Usage:
     Only 1 the 3 parameters shown are required:
 
     alias = (required) an alias previously assigned
-        to a thumbrint associated with the remote 
+        to a thumbrint associated with the remote
         system.
 
     -or-
 
-    thumbprint = (required) a thumbrint associated 
+    thumbprint = (required) a thumbrint associated
         with the remote system.
 
     -or-
@@ -413,7 +297,7 @@ Usage:
     port = (optional) The Port Number to listen for
         connections on, defaults to port 18593.
 
-    -or- 
+    -or-
 
     * = a special-case literal character '*' (asterisk)
         which will disconnect all remote systems.
@@ -432,11 +316,11 @@ Summary:
 Usage:
     /ACCEPT <thumbprint> [alias]
 
-    thumbprint = (required) a thumbrint associated 
+    thumbprint = (required) a thumbrint associated
         with the remote system.
 
     alias = (optional) an alias previously assigned
-        to a thumbrint associated with the remote 
+        to a thumbrint associated with the remote
         system.
 
 See also: /BAN
@@ -454,12 +338,12 @@ Usage:
     /BAN <alias|thumbprint|<host[:port]>>
 
     alias = (required) an alias previously assigned
-        to a thumbrint associated with the remote 
+        to a thumbrint associated with the remote
         system.
 
     -or-
 
-    thumbprint = (required) a thumbrint associated 
+    thumbprint = (required) a thumbrint associated
         with the remote system.
 
     -or-
@@ -557,6 +441,5 @@ shenc e chat noip-username:noip-password
 === ");
 
         #endregion Interactive Help
-
     }
 }

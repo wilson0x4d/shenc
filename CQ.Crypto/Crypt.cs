@@ -1,21 +1,17 @@
 ﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
+using X4D.Diagnostics.Logging;
 
-namespace shenc
+namespace CQ.Crypto
 {
-    partial class Program
+    public sealed class Crypt
     {
-        internal static string GetThumbprint(RSA rsa)
+        public string GetThumbprint(RSA rsa)
         {
             var result = default(string);
             using (var sha1 = SHA1.Create())
@@ -29,16 +25,16 @@ namespace shenc
             return result;
         }
 
-        private static void Hash(string keyid)
+        public void Hash(string keyid)
         {
             using (var rsa = LoadKeypair(keyid, false))
             {
                 var thumbprint = GetThumbprint(rsa);
-                Log($"HASH: {keyid}=\"{thumbprint}\"");
+                $"HASH: {keyid}=\"{thumbprint}\"".Log();
             }
         }
 
-        private static RSA GenerateKeypair(string keyid = null, int keyLength = 8192)
+        public RSA GenerateKeypair(string keyid = null, int keyLength = 8192)
         {
             keyid = keyid ?? $"{Guid.NewGuid()}";
             if (keyid.EndsWith(".prikey", StringComparison.OrdinalIgnoreCase) || keyid.EndsWith(".pubkey", StringComparison.OrdinalIgnoreCase))
@@ -97,7 +93,7 @@ namespace shenc
             return rsa;
         }
 
-        private static RSA LoadKeypair(string keyid, bool generateIfMissing = false, int keyLength = 8192)
+        public RSA LoadKeypair(string keyid, bool generateIfMissing = false, int keyLength = 8192)
         {
             if (!File.Exists(keyid))
             {
@@ -148,7 +144,7 @@ namespace shenc
             }
         }
 
-        private static void EncryptText(string keyfile, string input)
+        public void EncryptText(string keyfile, string input)
         {
             var rsa = LoadKeypair(keyfile);
             var data = Encoding.UTF8.GetBytes(input);
@@ -157,7 +153,7 @@ namespace shenc
             Console.WriteLine(output);
         }
 
-        private static void EncryptFile(string keyfile, string input)
+        public void EncryptFile(string keyfile, string input)
         {
             var rsa = LoadKeypair(keyfile);
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -176,7 +172,7 @@ namespace shenc
             Console.WriteLine($"Created: {input}.out");
         }
 
-        private static void DecryptText(string keyfile, string input)
+        public void DecryptText(string keyfile, string input)
         {
             var rsa = LoadKeypair(keyfile);
             var edata = Convert.FromBase64String(input);
@@ -185,7 +181,7 @@ namespace shenc
             Console.WriteLine(output);
         }
 
-        private static void DecryptFile(string keyfile, string input)
+        public void DecryptFile(string keyfile, string input)
         {
             var rsa = LoadKeypair(keyfile);
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -208,7 +204,7 @@ namespace shenc
             Console.WriteLine($"Created: {input}");
         }
 
-        private static void Encrypt(string keyfile, string input)
+        public void Encrypt(string keyfile, string input)
         {
             if (File.Exists(input))
             {
@@ -220,7 +216,7 @@ namespace shenc
             }
         }
 
-        private static void Decrypt(string keyfile, string input)
+        public void Decrypt(string keyfile, string input)
         {
             if (File.Exists(input))
             {
@@ -231,6 +227,5 @@ namespace shenc
                 DecryptText(keyfile, input);
             }
         }
-
     }
 }

@@ -11,6 +11,14 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.10.14" />
+    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CQ.Crypto\CQ.Crypto.csproj" />
+    <ProjectReference Include="..\CQ.Network\CQ.Network.csproj" />
+    <ProjectReference Include="..\CQ.Settings\CQ.Settings.csproj" />
+    <ProjectReference Include="..\CQ\CQ.csproj" />
   </ItemGroup>
 
 </Project>

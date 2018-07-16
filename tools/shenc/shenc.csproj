@@ -10,14 +10,28 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="systemDiagnostics.config" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="systemDiagnostics.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="4.5.0" />
+    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.10" />
+    <PackageReference Include="X4D.Diagnostics.Configuration" Version="0.1.0.10" />
+    <PackageReference Include="X4D.Diagnostics.Counters" Version="0.1.0.10" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\CQ.Crypto\CQ.Crypto.csproj" />
     <ProjectReference Include="..\..\CQ.Network\CQ.Network.csproj" />
     <ProjectReference Include="..\..\CQ.Settings\CQ.Settings.csproj" />
+    <ProjectReference Include="..\..\CQ\CQ.csproj" />
   </ItemGroup>
 
 </Project>
