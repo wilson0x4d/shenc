@@ -12,6 +12,9 @@ using X4D.Diagnostics.Logging;
 
 namespace shenc
 {
+    /// <summary>
+    /// <para>adapted from https://gist.github.com/wilson0x4d/a659723373ab2dd5ac845ba8a92ebb84</para>
+    /// </summary>
     partial class Program
     {
         private static Whitelist _whitelist;
@@ -24,8 +27,8 @@ namespace shenc
 
         static Program()
         {
-            var section = SystemDiagnosticsBootstrapper.Configure()
-                as ConfigurationSection;
+            //var section = SystemDiagnosticsBootstrapper.Configure()
+            //    as ConfigurationSection;
 
             _crypt = new Crypt();
         }
