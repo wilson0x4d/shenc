@@ -31,38 +31,45 @@ namespace CQ.Network
             _whitelist = whitelist;
         }
 
-        public void UpdateDynamicDns()
+        public Task<string> UpdateDynamicDns()
         {
-            try
+            return Task.Factory.StartNew<string>(() =>
             {
-                var hostname = System.Configuration.ConfigurationManager.AppSettings["no-ip:hostname"];
-                var auth = System.Configuration.ConfigurationManager.AppSettings["no-ip:auth"];
-                var keyid = System.Configuration.ConfigurationManager.AppSettings["no-ip:key"] ?? "chat";
-                if (!string.IsNullOrEmpty(hostname) && !string.IsNullOrEmpty(auth))
+                try
                 {
-                    var key = _crypt.LoadKeypair(keyid, false);
-                    var edata = Convert.FromBase64String(auth);
-                    var data = key.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
-                    var parts = Encoding.UTF8.GetString(data).Split(':');
+                    var hostname = System.Configuration.ConfigurationManager.AppSettings["no-ip:hostname"];
+                    var auth = System.Configuration.ConfigurationManager.AppSettings["no-ip:auth"];
+                    var keyid = System.Configuration.ConfigurationManager.AppSettings["no-ip:key"] ?? "chat";
+                    if (!string.IsNullOrEmpty(hostname) && !string.IsNullOrEmpty(auth))
+                    {
+                        var key = _crypt.LoadKeypair(keyid, false);
+                        var edata = Convert.FromBase64String(auth);
+                        var data = key.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+                        var parts = Encoding.UTF8.GetString(data).Split(':');
 
-                    var userName = parts[0];
-                    var password = parts[1];
+                        var userName = parts[0];
+                        var password = parts[1];
 
-                    var ipaddr = System.Configuration.ConfigurationManager.AppSettings["no-ip:address"] ?? WhatsMyIP();
+                        var ipaddr = System.Configuration.ConfigurationManager.AppSettings["no-ip:address"] ?? WhatsMyIP();
 
-                    var ddnsSuccess = TryWebGet(
-                        new Uri($"https://dynupdate.no-ip.com/nic/update?hostname={hostname}&myip={ipaddr}"),
-                        userName,
-                        password,
-                        out string result);
+                        var ddnsSuccess = TryWebGet(
+                            new Uri($"https://dynupdate.no-ip.com/nic/update?hostname={hostname}&myip={ipaddr}"),
+                            userName,
+                            password,
+                            out string result);
 
-                    $"=== DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}> {result}".Log();
+                        return $"DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}> {result}"
+                            .Log(ddnsSuccess
+                                ? System.Diagnostics.TraceEventType.Information
+                                : System.Diagnostics.TraceEventType.Warning);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                ex.Log();
-            }
+                catch (Exception ex)
+                {
+                    ex.Log();
+                }
+                return "";
+            });
         }
 
         public void ShutdownAllClientWorkers()

@@ -42,8 +42,12 @@ namespace shenc
 
             _crypt = new Crypt();
 
-            _netwk = new Netwk(_crypt, _whitelist);
-            _netwk.UpdateDynamicDns();
+            _netwk = new Netwk(_crypt, _whitelist, rsa);
+            _netwk.UpdateDynamicDns()
+                .ContinueWith(t =>
+                {
+                    Console.WriteLine(t.Result);
+                });
 
             while (!cancellationTokenSource.IsCancellationRequested)
             {
