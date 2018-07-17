@@ -70,7 +70,9 @@ namespace CQ.Network
             // shutdown all client workers
             lock (_clients)
             {
-                Task.WaitAll(_clients.Values.Select(StopClientWorker).ToArray());
+                Task.WaitAll(
+                    _clients.Values.Select(StopClientWorker).ToArray(),
+                    5000);
             }
         }
 

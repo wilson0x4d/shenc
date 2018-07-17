@@ -66,11 +66,12 @@ namespace shenc
                         case "/QUIT":
                             try
                             {
+                                Console.WriteLine("Disconnecting..".Log());
                                 _netwk.ShutdownAllClientWorkers();
                             }
                             finally
                             {
-                                // shutdown self
+                                Console.WriteLine("Shutting down..".Log());
                                 cancellationTokenSource.Cancel(false);
                             }
                             break;
