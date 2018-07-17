@@ -16,6 +16,22 @@ namespace CQ.Network
 {
     public sealed class Netwk
     {
+        public sealed class MessageReceivedEventArgs :
+            EventArgs
+        {
+            /// <summary>
+            /// The `ClientState` associated with `Message`.
+            /// </summary>
+            public ClientState Client { get; set; }
+
+            /// <summary>
+            /// The message.
+            /// </summary>
+            public string Message { get; set; }
+        }
+
+        public event EventHandler<MessageReceivedEventArgs> MessageReceived;
+
         private readonly Crypt _crypt;
 
         private readonly IDictionary<string, ClientState> _clients;
@@ -444,7 +460,11 @@ namespace CQ.Network
                                 else
                                 {
                                     var message = Encoding.UTF8.GetString(data);
-                                    $"({DateTime.UtcNow.ToString("HH:mm:ss")}) {client}> {message}".Log();
+                                    MessageReceived?.Invoke(this, new MessageReceivedEventArgs // [pleXus]
+                                    {
+                                        Client = client,
+                                        Message = message
+                                    });
                                 }
                             }
                         }

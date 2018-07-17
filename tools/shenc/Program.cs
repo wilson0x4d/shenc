@@ -43,6 +43,10 @@ namespace shenc
             _crypt = new Crypt();
 
             _netwk = new Netwk(_crypt, _whitelist, rsa);
+            _netwk.MessageReceived += (s, e) =>
+            {
+                Console.WriteLine($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {e.Client}> {e.Message}");
+            };
             _netwk.UpdateDynamicDns()
                 .ContinueWith(t =>
                 {
