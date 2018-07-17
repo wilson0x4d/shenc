@@ -54,10 +54,14 @@ namespace shenc
                     {
                         Console.WriteLine(t.Result);
                     }
+                    else
+                    {
+                        t.Exception.Log();
+                    }
                 });
         }
 
-        public static void PrintInteractiveHelp(string commandName)
+        public static void PrintInteractiveHelp(string commandName = "HELP")
         {
             #region Interactive Help
 
@@ -79,7 +83,7 @@ Usage:
 
  NOTE: The port may need to be added to your firewall.
 
-See also: /ACCEPT, /NOLISTEN
+See also: /WHITELIST, /NOLISTEN
 ");
                     break;
 
@@ -152,17 +156,20 @@ See also: /BAN, /CONNECT
 ");
                     break;
 
-                case "ACCEPT":
+                case "WHITELIST":
                     Console.WriteLine(@"
 
 Summary:
-    Accept a thumbprint/remote/client, and optionally
-    assign it an alias, by adding it to the WHITELIST.
+
+    If called without parameters, displays the current WHITELIST entries.
+
+    Otherwise, adds the specifiedi thumbprint to the WHITELIST, and 
+    optionally assign it an alias.
 
 Usage:
-    /ACCEPT <thumbprint> [alias]
+    /WHITELIST [<thumbprint> [alias]]
 
-    thumbprint = (required) a thumbrint associated
+    thumbprint = (optional) a thumbrint associated
         with the remote system.
 
     alias = (optional) an alias previously assigned
@@ -204,19 +211,6 @@ See also: /BAN
 ");
                     break;
 
-                case "WHITELIST":
-                    Console.WriteLine(@"
-
-Summary:
-    Displays the current WHITELIST entries.
-
-Usage:
-    /WHITELIST
-
-See also: /ACCEPT, /BAN
-");
-                    break;
-
                 case "QUIT":
                     Console.WriteLine(@"
 
@@ -237,11 +231,11 @@ Usage:
 /LISTEN [port-number]
 /NOLISTEN
 
-/CONNECT <host>:<port>
-/DISCONNECT <alias|<host>:<port>>
+/CONNECT <host[:port]>
+/DISCONNECT <alias|<host[:port]>>
 
-/ACCEPT <thumbprint> [alias]
-/BAN <thumbprint|alias|<host>:<port>>
+/WHITELIST [<thumbprint> [alias]]
+/BAN <thumbprint|alias|<host[:port]>>
 /WHITELIST
 
 /QUIT
@@ -257,119 +251,159 @@ Typing text and pressing ENTER will send your message to all connected remotes.
 
         public void ProcessCommand(string command)
         {
-            var commandParts = command.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            var commandParts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (commandParts.Length > 0)
             {
                 commandParts[0] = commandParts[0].ToUpperInvariant();
                 switch (commandParts[0])
                 {
-                    case "/HELP":
-                    case "/?":
-                        PrintInteractiveHelp(commandParts.Length > 1 ? commandParts[1] : commandParts[0]);
-                        break;
-
                     case "/QUIT":
-                        try
-                        {
-                            Console.WriteLine("Disconnecting..".Log());
-                            _netwk.ShutdownAllClientWorkers();
-                        }
-                        finally
-                        {
-                            Console.WriteLine("Shutting down..".Log());
-                            _cancellationTokenSource.Cancel(false);
-                        }
-                        break;
+                        QUIT(commandParts);
+                        return;
 
                     case "/LISTEN":
-                        {
-                            // TODO: control accept queue length
-                            var portNumber = commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593;
-                            Console.WriteLine($"Listening for connections on port '{portNumber}'..");
-                            _netwk
-                                .StartListening(
-                                    _cancellationTokenSource,
-                                    portNumber)
-                                .ContinueWith(t =>
-                                {
-                                    if (t.Exception == null)
-                                    {
-                                        Console.WriteLine($"LISTEN: Stopped listening on {portNumber}.");
-                                    }
-                                    else
-                                    {
-                                        Console.WriteLine($"LISTEN: Failed to stop listening on {portNumber}.");
-                                    }
-                                });
-                        }
-                        break;
+                        LISTEN(commandParts);
+                        return;
 
                     case "/DISCONNECT":
-                        {
-                            _netwk.DisconnectAllClients(commandParts);
-                        }
-                        break;
+                        DISCONNECT(commandParts);
+                        return;
 
                     case "/CONNECT":
-                        // TODO: similar to whitelist need a "last seen" list so we can attempt a connect by thumbnail/alias (last seen shoudl index by thumbnail)
-                        // treat each command input as a 'hostport'
-                        commandParts.Skip(1).Select(async hostport =>
-                        {
-                            try
-                            {
-                                Console.WriteLine($"Establishing connection to [{hostport}]");
-                                var client = await _netwk.ConnectTo(
-                                    hostport, 
-                                    _rsa);
-                                await client.Worker;
-                                Console.WriteLine($"Disconnected from [{hostport}]");
-                            }
-                            catch (Exception ex)
-                            {
-                                // TODO: console?
-                                ex.Log();
-                            }
-                        })
-                        .ToArray();
-                        break;
+                        CONNECT(commandParts);
+                        return;
 
                     case "/NOLISTEN":
-                    case "/NOHOST":
-                        _netwk.StopListening();
-                        break;
+                        NOLISTEN(commandParts);
+                        return;
 
                     case "/PING":
-                        _netwk.PingAllClients();
-                        break;
-
-                    case "/ACCEPT":
-                        Console.WriteLine(
-                            _netwk.AcceptClient(commandParts));
-                        break;
+                        PING(commandParts);
+                        return;
 
                     case "/BAN":
-                        Console.WriteLine(
-                            _netwk.Ban(commandParts));
-                        break;
+                        BAN(commandParts);
+                        return;
 
                     case "/WHITELIST":
-                        {
-                            lock (_whitelist)
-                            {
-                                foreach (var thumbprint in _whitelist)
-                                {
-                                    Console.WriteLine($"WHITELIST: {thumbprint}");
-                                }
-                            }
-                        }
-                        break;
+                        WHITELIST(commandParts);
+                        return;
+
+                    case "/SAY":
+                        SAY(commandParts);
+                        return;
 
                     default:
-                        _netwk.SendChatMessage(command);
+                        var helpTopic = commandParts.Length > 1
+                                ? commandParts[1]
+                                : commandParts[0];
+                        PrintInteractiveHelp(helpTopic);
                         break;
                 }
             }
         }
+
+        private void SAY(string[] commandParts)
+        {
+            _netwk.SendChatMessage(
+                string.Join(' ', commandParts.Skip(1)));
+        }
+
+        private void WHITELIST(string[] commandParts)
+        {
+            if (commandParts?.Length > 1)
+            {
+                Console.WriteLine(
+                    _netwk.AcceptClient(commandParts));
+            }
+            else
+            {
+                foreach (var entry in _whitelist)
+                {
+                    Console.WriteLine($"WHITELIST: {entry}");
+                }
+            }
+        }
+
+        private void BAN(string[] commandParts)
+        {
+            Console.WriteLine(
+                _netwk.Ban(commandParts));
+        }
+
+        private void PING(string[] commandParts)
+        {
             _netwk.PingAllClients();
+        }
+
+        private void NOLISTEN(string[] commandParts)
+        {
+            _netwk.StopListening();
+        }
+
+        private void CONNECT(string[] commandParts)
+        {
+            // TODO: similar to whitelist need a "last seen" list so we can attempt a connect by thumbnail/alias (last seen shoudl index by thumbnail)
+            // treat each command input as a 'hostport'
+            commandParts.Skip(1).Select(async hostport =>
+            {
+                try
+                {
+                    Console.WriteLine($"Establishing connection to [{hostport}]");
+                    var client = await _netwk.ConnectTo(
+                        hostport,
+                        _rsa);
+                    await client.Worker;
+                    Console.WriteLine($"Disconnected from [{hostport}]");
+                }
+                catch (Exception ex)
+                {
+                    // TODO: console?
+                    ex.Log();
+                }
+            })
+            .ToArray();
+        }
+
+        private void DISCONNECT(string[] commandParts)
+        {
+            _netwk.DisconnectAllClients(commandParts);
+        }
+
+        private void LISTEN(string[] commandParts)
+        {
+            // TODO: control accept queue length
+            var portNumber = commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593;
+            Console.WriteLine($"Listening for connections on port '{portNumber}'..");
+            _netwk
+                .StartListening(
+                    _cancellationTokenSource,
+                    portNumber)
+                .ContinueWith(t =>
+                {
+                    if (t.Exception == null)
+                    {
+                        Console.WriteLine($"LISTEN: Stopped listening on {portNumber}.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"LISTEN: Failed to stop listening on {portNumber}.");
+                    }
+                });
+        }
+
+        private void QUIT(string[] commandParts)
+        {
+            try
+            {
+                Console.WriteLine("Disconnecting..".Log());
+                _netwk.ShutdownAllClientWorkers();
+            }
+            finally
+            {
+                Console.WriteLine("Shutting down..".Log());
+                _cancellationTokenSource.Cancel(false);
+            }
+        }
     }
 }
