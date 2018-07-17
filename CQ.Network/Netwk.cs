@@ -44,6 +44,7 @@ namespace CQ.Network
 
         public Netwk(Crypt crypt, Whitelist whitelist, RSA rsa)
         {
+            _rsa = rsa;
             _crypt = crypt;
             _clients = new Dictionary<string, ClientState>(StringComparer.OrdinalIgnoreCase);
             _whitelist = whitelist;
@@ -90,6 +91,11 @@ namespace CQ.Network
             });
         }
 
+        public bool TryGetClient(string hostport, out ClientState client)
+        {
+            return _clients.TryGetValue(hostport, out client);
+        }
+
         public void ShutdownAllClientWorkers()
         {
             // shutdown all client workers
@@ -109,7 +115,7 @@ namespace CQ.Network
             hostport = $"{hostName}:{portNumber}";
             var tcpClient = new TcpClient();
             tcpClient.NoDelay = true;
-            $"Requesting connection to [{hostport}]..".Log();
+            $"Establishing connection to [{hostport}]..".Log();
             await tcpClient.ConnectAsync(hostName, portNumber);
             var client = default(ClientState);
             lock (_clients)
@@ -121,7 +127,7 @@ namespace CQ.Network
                 if (_clients.TryGetValue(hostport, out ClientState existingClient))
                 {
                     _clients[hostport] = client;
-                    $"CONNECT: Replacing '{existingClient}' with '{client}'..".Log();
+                    $"Replacing '{existingClient}' with '{client}'..".Log();
 #pragma warning disable 4014
                     StopClientWorker(existingClient);
 #pragma warning restore 4014
@@ -129,7 +135,7 @@ namespace CQ.Network
                 else
                 {
                     _clients[hostport] = client;
-                    $"CONNECT: Added '{client}'".Log();
+                    $"Added '{client}'".Log();
                 }
             }
 #pragma warning disable 4014
@@ -140,7 +146,7 @@ namespace CQ.Network
                 {
                     if (_clients.Remove(hostport))
                     {
-                        $"LISTEN: Removed {client}".Log(System.Diagnostics.TraceEventType.Verbose);
+                        $"Removed {client}".Log(System.Diagnostics.TraceEventType.Verbose);
                     }
                 }
             });
@@ -148,8 +154,9 @@ namespace CQ.Network
             return client;
         }
 
-        public void Ban(string[] commandParts)
+        public string Ban(string[] commandParts)
         {
+            var result = new StringBuilder();
             // remove from whitelist, each command part would be a new thumbprint
             lock (_clients)
             {
@@ -166,7 +173,7 @@ namespace CQ.Network
                     foreach (var thumbprint in blacklist)
                     {
                         _whitelist.Remove(thumbprint);
-                        $"BAN: {thumbprint}".Log();
+                        result.AppendLine($"BAN: {thumbprint}".Log());
                     }
 
                     _whitelist.StoreWhitelist();
@@ -179,6 +186,8 @@ namespace CQ.Network
                     }
                 }
             }
+
+            return result.ToString();
         }
 
         public void SendChatMessage(string command)
@@ -378,10 +387,11 @@ namespace CQ.Network
             }
         }
 
-        public async Task StartClientWorker(
+        public async Task<string/*worker feedback*/> StartClientWorker(
             ClientState client,
             RSA rsa)
         {
+            var result = new StringBuilder(); // TODO: transitional, the absurdity of this is obvious (network tier is responsible for presentation!)
             client.CancellationTokenSource = new CancellationTokenSource();
 
             // exchange our pubkey in the clear, this starts our conversation with remote
@@ -440,14 +450,15 @@ namespace CQ.Network
                                 // check client pubkey thumbprint against whitelist, if not in whitelist then force a disconnect
                                 lock (_whitelist)
                                 {
-                                    if (_whitelist.TryGetValue(client.Thumbprint, out string alias))
+                                    if (_whitelist.TryGetAlias(client.Thumbprint, out string alias))
                                     {
-                                        $"Connected to {client}".Log();
+                                        result.AppendLine($"Connected to {client}");
                                     }
                                     else
                                     {
-                                        $"Rejecting {client}, thumbprint is not authorized.".Log();
-                                        $"You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.".Log();
+                                        result
+                                            .AppendLine($@"Rejecting {client}, thumbprint is not authorized.")
+                                            .AppendLine("You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.");
                                         break;
                                     }
                                 }
@@ -460,7 +471,7 @@ namespace CQ.Network
                                     // TODO: stun
                                 }
                                 else
-                                {
+                                {                                    
                                     var message = Encoding.UTF8.GetString(data);
                                     MessageReceived?.Invoke(this, new MessageReceivedEventArgs // [pleXus]
                                     {
@@ -488,7 +499,7 @@ namespace CQ.Network
                         writeOffset += cb;
                         if (cb == 0)
                         {
-                            ($"WORKER: Disconnection request detected for [{client.HostName}:{client.PortNumber}]").Log();
+                            result.AppendLine($"WORKER: Disconnection request detected for [{client.HostName}:{client.PortNumber}]".Log());
                             // remote closure initiated
                             client.CancellationTokenSource.Cancel();
                             break;
@@ -496,11 +507,11 @@ namespace CQ.Network
                         else if (writeOffset >= buf.Length)
                         {
                             // TODO: gracefully d/c the offending client instead
-                            throw new RankException($"Internal buffer overflow detected for [{client.HostName}:{client.PortNumber}]");
+                            throw new RankException($"Internal buffer overflow detected for [{client.HostName}:{client.PortNumber}]".Log());
                         }
                         else if (readOffset > writeOffset)
                         {
-                            throw new RankException($"Internal buffer underflow detected for [{client.HostName}:{client.PortNumber}]");
+                            throw new RankException($"Internal buffer underflow detected for [{client.HostName}:{client.PortNumber}]".Log());
                         }
                         else if (readOffset == writeOffset && expectedSize == 0)
                         {
@@ -521,8 +532,9 @@ namespace CQ.Network
                 client.TcpClient.Close();
                 client.TcpClient.Dispose();
                 client.TcpClient = null;
-                $"WORKER: Disconnected from client".Log();
+                result.AppendLine($"WORKER: Disconnected from client".Log());
             }
+            return result.ToString();
         }
 
         public void OnClientAcceptCallback(ClientState client, RSA rsa)

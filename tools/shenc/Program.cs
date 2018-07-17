@@ -1,9 +1,11 @@
-﻿using CQ.Crypto;
+﻿using CQ;
+using CQ.Crypto;
 using CQ.Network;
 using CQ.Settings;
 using System;
 using System.Configuration;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
@@ -52,6 +54,10 @@ namespace shenc
                 {
                     Console.WriteLine(t.Result);
                 });
+
+            PrintInteractiveHelp("HELP");
+
+            Console.WriteLine("Welcome to Interactive Mode, enter one of the commands above to get started.");
 
             while (!cancellationTokenSource.IsCancellationRequested)
             {
@@ -108,15 +114,20 @@ namespace shenc
                             break;
 
                         case "/CONNECT":
+                            // TODO: similar to whitelist need a "last seen" list so we can attempt a connect by thumbnail/alias (last seen shoudl index by thumbnail)
                             // treat each command input as a 'hostport'
                             commandParts.Skip(1).Select(async hostport =>
                             {
                                 try
                                 {
+                                    Console.WriteLine($"Establishing connection to [{hostport}]");
                                     var client = await _netwk.ConnectTo(hostport, rsa);
+                                    await client.Worker;
+                                    Console.WriteLine($"Disconnected from [{hostport}]");
                                 }
                                 catch (Exception ex)
                                 {
+                                    // TODO: console?
                                     ex.Log();
                                 }
                             })
@@ -129,21 +140,17 @@ namespace shenc
                             break;
 
                         case "/PING":
-                            {
-                                _netwk.PingAllClients();
-                            }
+                            _netwk.PingAllClients();
                             break;
 
                         case "/ACCEPT":
-                            {
-                                _netwk.AcceptClient(commandParts);
-                            }
+                            Console.WriteLine(
+                                _netwk.AcceptClient(commandParts));
                             break;
 
                         case "/BAN":
-                            {
-                                _netwk.Ban(commandParts);
-                            }
+                            Console.WriteLine(
+                                _netwk.Ban(commandParts));
                             break;
 
                         case "/WHITELIST":
@@ -152,7 +159,7 @@ namespace shenc
                                 {
                                     foreach (var thumbprint in _whitelist)
                                     {
-                                        ($"WHITELIST: {thumbprint}").Log();
+                                        Console.WriteLine($"WHITELIST: {thumbprint}");
                                     }
                                 }
                             }
@@ -168,6 +175,7 @@ namespace shenc
 
         private static void Main(string[] args)
         {
+            Console.WriteLine($"Shell Encryption Tool ({typeof(Program).Assembly.GetName().Version})");
             _processId = Process.GetCurrentProcess().Id;
             try
             {
@@ -185,6 +193,7 @@ namespace shenc
                         ? args[1].Remove(args[1].Length - 7)
                         : args[1]
                     : default(string);
+
                 var input = args.Length > 2
                     ? string.Join(" ", args.Skip(2))
                     : default(string);
@@ -228,7 +237,10 @@ namespace shenc
 
                     case "HASH":
                     case "H":
-                        _crypt.Hash(keyid);
+                        {
+                            var thumbprint = _crypt.Hash(keyid);
+                            $"HASH: {keyid}=\"{thumbprint}\"".Log();
+                        }
                         break;
 
                     default:

@@ -1,8 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,8 +9,10 @@ namespace CQ
     public sealed class ClientState :
         IDisposable
     {
+        private RSA _rsa;
+
         public ClientState(
-            string hostName,
+                    string hostName,
             int portNumber,
             TcpClient client)
         {
@@ -20,8 +20,6 @@ namespace CQ
             PortNumber = portNumber;
             TcpClient = client;
         }
-
-        private RSA _rsa;
 
         ~ClientState()
         {
