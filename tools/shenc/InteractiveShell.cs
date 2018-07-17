@@ -47,18 +47,6 @@ namespace shenc
             {
                 Console.WriteLine($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {e.Client}> {e.Message}");
             };
-            _netwk.UpdateDynamicDns()
-                .ContinueWith(t =>
-                {
-                    if (t.Exception == null)
-                    {
-                        Console.WriteLine(t.Result);
-                    }
-                    else
-                    {
-                        t.Exception.Log();
-                    }
-                });
         }
 
         public static void PrintInteractiveHelp(string commandName = "HELP")

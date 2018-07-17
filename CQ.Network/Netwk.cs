@@ -53,9 +53,9 @@ namespace CQ.Network
             _onStatusChange = onStatusChange;
         }
 
-        public Task<string> UpdateDynamicDns()
+        public async Task UpdateDynamicDnsAsync()
         {
-            return Task.Factory.StartNew<string>(() =>
+            await Task.Run(() =>
             {
                 try
                 {
@@ -80,21 +80,21 @@ namespace CQ.Network
                             password,
                             out string result);
 
-                        return $"DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}> {result}"
+                        _onStatusChange($"DDNS RESULT: {(ddnsSuccess ? "SUCCESS" : "FAILED")}> {result}"
                             .Log(ddnsSuccess
                                 ? System.Diagnostics.TraceEventType.Information
-                                : System.Diagnostics.TraceEventType.Warning);
+                                : System.Diagnostics.TraceEventType.Warning));
                     }
                 }
                 catch (Exception ex)
                 {
                     ex.Log();
                 }
-                return "";
             });
         }
 
-        public bool TryGetClient(string hostport, out ClientState client)
+
+            public bool TryGetClient(string hostport, out ClientState client)
         {
             return _clients.TryGetValue(hostport, out client);
         }

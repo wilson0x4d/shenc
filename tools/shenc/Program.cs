@@ -31,13 +31,20 @@ namespace shenc
         {
             var whitelist = new Whitelist();
             whitelist.ReloadWhitelist();
+
+            var netwk = new Netwk(
+                _crypt,
+                whitelist,
+                rsa,
+                OnStatusChanged);
+
+#pragma warning disable 4014
+            netwk.UpdateDynamicDnsAsync();
+#pragma warning restore 4014
+
             var interactiveShell = new InteractiveShell(
                 whitelist,
-                new Netwk(
-                    _crypt,
-                    whitelist,
-                    rsa,
-                    OnStatusChanged),
+                netwk,
                 _crypt,
                 _processId,
                 rsa,
