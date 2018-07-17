@@ -178,8 +178,12 @@ namespace shenc
                 }
 
                 var opcode = args[0].ToUpperInvariant();
+
+                // take specified keyid, removing any pubkey/prikey file extension
                 var keyid = args.Length > 1
-                    ? args[1]
+                    ? (args[1].EndsWith(".prikey", StringComparison.OrdinalIgnoreCase) != args[1].EndsWith(".pubkey", StringComparison.OrdinalIgnoreCase))
+                        ? args[1].Remove(args[1].Length - 7)
+                        : args[1]
                     : default(string);
                 var input = args.Length > 2
                     ? string.Join(" ", args.Skip(2))
@@ -202,6 +206,14 @@ namespace shenc
                     case "GENKEYS":
                     case "G":
                         _crypt.GenerateKeypair(keyid, int.Parse(input ?? "8192"));
+                        if (File.Exists($"{keyid}.prikey"))
+                        {
+                            Console.WriteLine($"PRIKEY file: {keyid}.prikey");
+                        }
+                        if (File.Exists($"{keyid}.pubkey"))
+                        {
+                            Console.WriteLine($"PUBKEY file: {keyid}.pubkey");
+                        }
                         return;
 
                     case "ENCRYPT":
