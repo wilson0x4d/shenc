@@ -38,9 +38,11 @@ namespace CQ.Network
 
         private readonly Whitelist _whitelist;
 
+        private readonly RSA _rsa;
+
         private TcpListener _listener;
 
-        public Netwk(Crypt crypt, Whitelist whitelist)
+        public Netwk(Crypt crypt, Whitelist whitelist, RSA rsa)
         {
             _crypt = crypt;
             _clients = new Dictionary<string, ClientState>(StringComparer.OrdinalIgnoreCase);
