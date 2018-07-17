@@ -25,12 +25,12 @@ namespace CQ.Crypto
             return result;
         }
 
-        public void Hash(string keyid)
+        public string Hash(string keyid)
         {
             using (var rsa = LoadKeypair(keyid, false))
             {
                 var thumbprint = GetThumbprint(rsa);
-                $"HASH: {keyid}=\"{thumbprint}\"".Log();
+                return thumbprint;
             }
         }
 
@@ -41,7 +41,6 @@ namespace CQ.Crypto
             {
                 keyid = keyid.Remove(keyid.Length - 7);
             }
-            Console.WriteLine("Generating a new key, this could take a while.. please be patient.");
             var rsa = RSA.Create();
             rsa.KeySize = keyLength;
             {
@@ -65,7 +64,7 @@ namespace CQ.Crypto
                     file.Flush();
                     file.Close();
                 }
-                Console.WriteLine($"Generated PRIKEY file: {keyid}.prikey");
+                $"Generated PRIKEY file: {keyid}.prikey".Log();
             }
             {
                 var rsaParameters = rsa.ExportParameters(false);
@@ -88,7 +87,7 @@ namespace CQ.Crypto
                     file.Flush();
                     file.Close();
                 }
-                Console.WriteLine($"Generated PUBKEY file: {keyid}.pubkey");
+                $"Generated PUBKEY file: {keyid}.pubkey".Log();
             }
             return rsa;
         }
@@ -139,23 +138,23 @@ namespace CQ.Crypto
                 var rsa = RSA.Create();
                 rsa.ImportParameters(rsaParameters);
                 file.Close();
-                Console.WriteLine($"Loaded Key '{keyid}'");
+                $"Loaded Key '{keyid}'".Log();
                 return rsa;
             }
         }
 
-        public void EncryptText(string keyfile, string input)
+        public string EncryptText(string keyid, string input)
         {
-            var rsa = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyid);
             var data = Encoding.UTF8.GetBytes(input);
             var edata = rsa.Encrypt(data, RSAEncryptionPadding.Pkcs1);
             var output = Convert.ToBase64String(edata, Base64FormattingOptions.None);
-            Console.WriteLine(output);
+            return output;
         }
 
-        public void EncryptFile(string keyfile, string input)
+        public string EncryptFile(string keyid, string input)
         {
-            var rsa = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyid);
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
                 var data = new byte[infile.Length];
@@ -169,21 +168,21 @@ namespace CQ.Crypto
                 }
                 infile.Close();
             }
-            Console.WriteLine($"Created: {input}.out");
+            return $"Created: {input}.out";
         }
 
-        public void DecryptText(string keyfile, string input)
+        public string DecryptText(string keyid, string input)
         {
-            var rsa = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyid);
             var edata = Convert.FromBase64String(input);
             var data = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
             var output = Encoding.UTF8.GetString(data);
-            Console.WriteLine(output);
+            return output;
         }
 
-        public void DecryptFile(string keyfile, string input)
+        public string DecryptFile(string keyid, string input)
         {
-            var rsa = LoadKeypair(keyfile);
+            var rsa = LoadKeypair(keyid);
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
                 if (input.EndsWith(".out"))
@@ -201,30 +200,30 @@ namespace CQ.Crypto
                 }
                 infile.Close();
             }
-            Console.WriteLine($"Created: {input}");
+            return $"Created: {input}";
         }
 
-        public void Encrypt(string keyfile, string input)
+        public string Encrypt(string keyid, string input)
         {
             if (File.Exists(input))
             {
-                EncryptFile(keyfile, input);
+                return EncryptFile(keyid, input).Log();
             }
             else
             {
-                EncryptText(keyfile, input);
+                return EncryptText(keyid, input).Log();
             }
         }
 
-        public void Decrypt(string keyfile, string input)
+        public string Decrypt(string keyid, string input)
         {
             if (File.Exists(input))
             {
-                DecryptFile(keyfile, input);
+                return DecryptFile(keyid, input).Log();
             }
             else
             {
-                DecryptText(keyfile, input);
+                return DecryptText(keyid, input).Log();
             }
         }
     }
