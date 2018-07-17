@@ -448,19 +448,18 @@ namespace CQ.Network
                                 client.RSA = clientRSA; // late assignment avoids race condition (invalid thumbprint result) from interstitial before import completes.
                                 client.Thumbprint = _crypt.GetThumbprint(clientRSA);
                                 // check client pubkey thumbprint against whitelist, if not in whitelist then force a disconnect
-                                lock (_whitelist)
+                                if (_whitelist.TryGetAlias(client.Thumbprint, out string alias))
                                 {
-                                    if (_whitelist.TryGetAlias(client.Thumbprint, out string alias))
-                                    {
                                         result.AppendLine($"Connected to {client}");
-                                    }
-                                    else
-                                    {
                                         result
                                             .AppendLine($@"Rejecting {client}, thumbprint is not authorized.")
                                             .AppendLine("You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.");
-                                        break;
-                                    }
+                                    client.Alias = alias;
+                                }
+                                else
+                                {
+                                    client.Alias = client.Thumbprint;
+                                    break;
                                 }
                             }
                             else
@@ -471,7 +470,7 @@ namespace CQ.Network
                                     // TODO: stun
                                 }
                                 else
-                                {                                    
+                                {
                                     var message = Encoding.UTF8.GetString(data);
                                     MessageReceived?.Invoke(this, new MessageReceivedEventArgs // [pleXus]
                                     {

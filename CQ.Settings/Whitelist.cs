@@ -10,20 +10,25 @@ namespace CQ.Settings
     public sealed class Whitelist :
         IEnumerable<KeyValuePair<string, string>>
     {
-        private IDictionary<string/*thumbprint*/, string/*display alias*/> _thumbprints;
+        private readonly IDictionary<string/*thumbprint*/, string/*display alias*/> _thumbprints;
 
         public Whitelist()
         {
             _thumbprints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        public Whitelist LoadWhitelist()
+        public Whitelist ReloadWhitelist()
         {
-            var items = LoadWhitelistInternal();
-            _thumbprints = items.ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => kvp.Value);
-            return this;
+            lock (_thumbprints)
+            {
+                var items = LoadWhitelistInternal();
+                _thumbprints.Clear();
+                foreach (var item in items)
+                {
+                    _thumbprints.Add(item);
+                }
+                return this;
+            }
         }
 
         public IEnumerable<KeyValuePair<string, string>> LoadWhitelistInternal()
@@ -55,7 +60,10 @@ namespace CQ.Settings
                     using (var writer = new StreamWriter(
                         File.Open("whitelist.txt", FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)))
                     {
-                        _thumbprints.ToList().ForEach(kvp => writer.WriteLine($"{kvp.Key},{kvp.Value}"));
+                        lock (_thumbprints)
+                        {
+                            _thumbprints.ToList().ForEach(kvp => writer.WriteLine($"{kvp.Key},{kvp.Value}"));
+                        }
                         writer.Flush();
                         writer.Close();
                     }
@@ -65,42 +73,60 @@ namespace CQ.Settings
 
         public bool TryGetAlias(string thumbprint, out string alias)
         {
-            return _thumbprints.TryGetValue(thumbprint, out alias);
+            lock (_thumbprints)
+            {
+                return _thumbprints.TryGetValue(thumbprint, out alias);
+            }
         }
 
         public void Set(string thumbprint, string alias)
         {
-            _thumbprints[thumbprint] = alias;
+            lock (_thumbprints)
+            {
+                _thumbprints[thumbprint] = alias;
+            }
         }
 
         public IEnumerable<string> GetMatchingThumbprints(IEnumerable<string> criteria)
         {
-            return _thumbprints
-                .Where(kvp => criteria.Any(e =>
-                    kvp.Key.Equals(e, StringComparison.OrdinalIgnoreCase))
-                    || criteria.Any(e => kvp.Value.Equals(e, StringComparison.OrdinalIgnoreCase)))
-                .Select(kvp => kvp.Key)
-                .ToArray();
+            lock (_thumbprints)
+            {
+                return _thumbprints
+                    .Where(kvp => criteria.Any(e =>
+                        kvp.Key.Equals(e, StringComparison.OrdinalIgnoreCase))
+                        || criteria.Any(e => kvp.Value.Equals(e, StringComparison.OrdinalIgnoreCase)))
+                    .Select(kvp => kvp.Key)
+                    .ToArray();
+            }
         }
 
         public bool Remove(string thumbprint)
         {
-            return _thumbprints.Remove(thumbprint);
+            lock (_thumbprints)
+            {
+                return _thumbprints.Remove(thumbprint);
+            }
         }
 
         public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
         {
-            foreach (var kvp in _thumbprints)
+            lock (_thumbprints)
             {
-                yield return kvp;
+                foreach (var kvp in _thumbprints)
+                {
+                    yield return kvp;
+                }
             }
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            foreach (var kvp in _thumbprints)
+            lock (_thumbprints)
             {
-                yield return kvp;
+                foreach (var kvp in _thumbprints)
+                {
+                    yield return kvp;
+                }
             }
         }
     }
