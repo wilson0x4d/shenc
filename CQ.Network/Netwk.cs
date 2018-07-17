@@ -286,7 +286,7 @@ namespace CQ.Network
             lock (_clients)
             {
                 clients = _clients.Values
-                    .Select(PING)
+                    .Select(PingClient)
                     .ToArray(); // fire and forget.
             }
         }
@@ -320,7 +320,7 @@ namespace CQ.Network
             client.TcpClient.Client.Send(edata, SocketFlags.Partial);
         }
 
-        public async Task PING(ClientState client)
+        public async Task PingClient(ClientState client)
         {
             // TODO: ping should execute at regular intervals for keepalive and/or orphan/stale/dead link detection
             // TODO: ping should perform a "CHAL", ie. the PONG response should contain our signature, signed by the remote, which we can then use to authenticate the link. in a "man in the middle" attack should yield either a bad PING sig or a bad PONG sig which should result in a hard disconnect from either end

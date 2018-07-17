@@ -370,5 +370,6 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                 }
             }
         }
+            _netwk.PingAllClients();
     }
 }
