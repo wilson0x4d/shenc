@@ -46,21 +46,6 @@ namespace CQ.Settings
             }
         }
 
-        public string GetAlias(string thumbprint)
-        {
-            lock (_thumbprints)
-            {
-                foreach (var kvp in _thumbprints)
-                {
-                    if (kvp.Key.Equals(thumbprint, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return kvp.Value;
-                    }
-                }
-            }
-            return thumbprint;
-        }
-
         public void StoreWhitelist()
         {
             lock (_thumbprints)
@@ -78,7 +63,7 @@ namespace CQ.Settings
             }
         }
 
-        public bool TryGetValue(string thumbprint, out string alias)
+        public bool TryGetAlias(string thumbprint, out string alias)
         {
             return _thumbprints.TryGetValue(thumbprint, out alias);
         }
