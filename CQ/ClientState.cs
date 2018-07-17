@@ -12,7 +12,7 @@ namespace CQ
         private RSA _rsa;
 
         public ClientState(
-                    string hostName,
+            string hostName,
             int portNumber,
             TcpClient client)
         {

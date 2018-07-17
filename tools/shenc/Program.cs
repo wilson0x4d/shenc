@@ -1,15 +1,12 @@
-﻿using CQ;
-using CQ.Crypto;
+﻿using CQ.Crypto;
 using CQ.Network;
 using CQ.Settings;
 using System;
-using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
-using X4D.Diagnostics.Configuration;
 using X4D.Diagnostics.Logging;
 
 namespace shenc
@@ -19,19 +16,12 @@ namespace shenc
     /// </summary>
     partial class Program
     {
-        private static Whitelist _whitelist;
-
         private static Crypt _crypt;
-
-        private static Netwk _netwk;
 
         private static int _processId;
 
         static Program()
         {
-            //var section = SystemDiagnosticsBootstrapper.Configure()
-            //    as ConfigurationSection;
-
             _crypt = new Crypt();
         }
 
@@ -39,138 +29,37 @@ namespace shenc
             RSA rsa,
             CancellationTokenSource cancellationTokenSource)
         {
-            _whitelist = new Whitelist();
-            _whitelist.LoadWhitelist();
+            var whitelist = new Whitelist();
+            whitelist.ReloadWhitelist();
+            var interactiveShell = new InteractiveShell(
+                whitelist,
+                new Netwk(
+                    _crypt,
+                    whitelist,
+                    rsa,
+                    OnStatusChanged),
+                _crypt,
+                _processId,
+                rsa,
+                OnStatusChanged,
+                cancellationTokenSource);
 
-            _crypt = new Crypt();
-
-            _netwk = new Netwk(_crypt, _whitelist, rsa);
-            _netwk.MessageReceived += (s, e) =>
-            {
-                Console.WriteLine($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {e.Client}> {e.Message}");
-            };
-            _netwk.UpdateDynamicDns()
-                .ContinueWith(t =>
-                {
-                    Console.WriteLine(t.Result);
-                });
-
-            PrintInteractiveHelp("HELP");
-
+            InteractiveShell.PrintInteractiveHelp("HELP");
             Console.WriteLine("Welcome to Interactive Mode, enter one of the commands above to get started.");
 
             while (!cancellationTokenSource.IsCancellationRequested)
             {
                 var command = Console.ReadLine();
-                if (string.IsNullOrWhiteSpace(command))
+                if (!string.IsNullOrWhiteSpace(command))
                 {
-                    continue;
-                }
-                var commandParts = command.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (commandParts.Length > 0)
-                {
-                    commandParts[0] = commandParts[0].ToUpperInvariant();
-                    switch (commandParts[0])
-                    {
-                        case "/HELP":
-                        case "/?":
-                            PrintInteractiveHelp(commandParts.Length > 1 ? commandParts[1] : commandParts[0]);
-                            break;
-
-                        case "/QUIT":
-                            try
-                            {
-                                Console.WriteLine("Disconnecting..".Log());
-                                _netwk.ShutdownAllClientWorkers();
-                            }
-                            finally
-                            {
-                                Console.WriteLine("Shutting down..".Log());
-                                cancellationTokenSource.Cancel(false);
-                            }
-                            break;
-
-                        case "/LISTEN":
-                            {
-                                // TODO: control accept queue length
-                                var portNumber = commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593;
-                                Console.WriteLine($"Listening for connections on port '{portNumber}'..");
-                                _netwk
-                                    .StartListening(
-                                        cancellationTokenSource,
-                                        portNumber)
-                                    .ContinueWith(t =>
-                                    {
-                                        Console.WriteLine($"LISTEN: Stopped listening on {portNumber}.");
-                                    });
-
-                            }
-                            break;
-
-                        case "/DISCONNECT":
-                            {
-                                _netwk.DisconnectAllClients(commandParts);
-                            }
-                            break;
-
-                        case "/CONNECT":
-                            // TODO: similar to whitelist need a "last seen" list so we can attempt a connect by thumbnail/alias (last seen shoudl index by thumbnail)
-                            // treat each command input as a 'hostport'
-                            commandParts.Skip(1).Select(async hostport =>
-                            {
-                                try
-                                {
-                                    Console.WriteLine($"Establishing connection to [{hostport}]");
-                                    var client = await _netwk.ConnectTo(hostport, rsa);
-                                    await client.Worker;
-                                    Console.WriteLine($"Disconnected from [{hostport}]");
-                                }
-                                catch (Exception ex)
-                                {
-                                    // TODO: console?
-                                    ex.Log();
-                                }
-                            })
-                            .ToArray();
-                            break;
-
-                        case "/NOLISTEN":
-                        case "/NOHOST":
-                            _netwk.StopListening();
-                            break;
-
-                        case "/PING":
-                            _netwk.PingAllClients();
-                            break;
-
-                        case "/ACCEPT":
-                            Console.WriteLine(
-                                _netwk.AcceptClient(commandParts));
-                            break;
-
-                        case "/BAN":
-                            Console.WriteLine(
-                                _netwk.Ban(commandParts));
-                            break;
-
-                        case "/WHITELIST":
-                            {
-                                lock (_whitelist)
-                                {
-                                    foreach (var thumbprint in _whitelist)
-                                    {
-                                        Console.WriteLine($"WHITELIST: {thumbprint}");
-                                    }
-                                }
-                            }
-                            break;
-
-                        default:
-                            _netwk.SendChatMessage(command);
-                            break;
-                    }
+                    interactiveShell.ProcessCommand(command);
                 }
             }
+        }
+
+        private static void OnStatusChanged(string statusText)
+        {
+            Console.WriteLine(statusText);
         }
 
         private static void Main(string[] args)
@@ -208,6 +97,13 @@ namespace shenc
                             }
                             var rsa = _crypt.LoadKeypair(keyid, true); // ie. "My" key, the key used to decrypt incoming data
                             var cancellationTokenSource = new CancellationTokenSource();
+                            Console.CancelKeyPress += (s, e) =>
+                            {
+                                if (!cancellationTokenSource.IsCancellationRequested)
+                                {
+                                    cancellationTokenSource.Cancel();
+                                }
+                            };
                             SwitchToInteractiveMode(rsa, cancellationTokenSource);
                         }
                         return;
@@ -254,198 +150,7 @@ namespace shenc
             }
         }
 
-        #region Interactive Help
-
-        private static void PrintInteractiveHelp(string command)
-        {
-            switch (command.Trim('/'))
-            {
-                case "LISTEN":
-                    Console.WriteLine(@"
-
-Summary:
-    Listen for connections on the specified port number.
-
-Usage:
-    /LISTEN [port-number]
-
-    port-number = (optional) The Port Number to listen for
-        connections on, defaults to port 18593.
-
- NOTE: Listening on more than one port is not supported.
-
- NOTE: The port may need to be added to your firewall.
-
-See also: /ACCEPT, /NOLISTEN
-");
-                    break;
-
-                case "NOLISTEN":
-                    Console.WriteLine(@"
-
-Summary:
-    Stop listening for connections.
-
-Usage:
-    /NOLISTEN
-
-See also: /BAN, /DISCONNECT, /LISTEN
-");
-                    break;
-
-                case "CONNECT":
-                    Console.WriteLine(@"
-
-Summary:
-    Connect a remote system.
-
-Usage:
-    /CONNECT <host[:port]>
-
-    host = (required) a hostname or ip address of the
-        remote system to connect to.
-
-    port = (optional) The Port Number to listen for
-        connections on, defaults to port 18593.
-
-See also: /DISCONNECT
-");
-                    break;
-
-                case "DISCONNECT":
-                    Console.WriteLine(@"
-
-Summary:
-    Disconnect a remote system.
-
-Usage:
-    /DISCONNECT <alias|thumbprint|<host[:port]>|*]>
-
-    Only 1 the 3 parameters shown are required:
-
-    alias = (required) an alias previously assigned
-        to a thumbrint associated with the remote
-        system.
-
-    -or-
-
-    thumbprint = (required) a thumbrint associated
-        with the remote system.
-
-    -or-
-
-    host = (required) a hostname or ip address of the
-        remote system to connect to.
-
-    port = (optional) The Port Number to listen for
-        connections on, defaults to port 18593.
-
-    -or-
-
-    * = a special-case literal character '*' (asterisk)
-        which will disconnect all remote systems.
-
-See also: /BAN, /CONNECT
-");
-                    break;
-
-                case "ACCEPT":
-                    Console.WriteLine(@"
-
-Summary:
-    Accept a thumbprint/remote/client, and optionally
-    assign it an alias, by adding it to the WHITELIST.
-
-Usage:
-    /ACCEPT <thumbprint> [alias]
-
-    thumbprint = (required) a thumbrint associated
-        with the remote system.
-
-    alias = (optional) an alias previously assigned
-        to a thumbrint associated with the remote
-        system.
-
-See also: /BAN
-");
-                    break;
-
-                case "BAN":
-                    Console.WriteLine(@"
-
-Summary:
-    Ban a thumbprint/remote/client by removing it from
-    the WHITELIST.
-
-Usage:
-    /BAN <alias|thumbprint|<host[:port]>>
-
-    alias = (required) an alias previously assigned
-        to a thumbrint associated with the remote
-        system.
-
-    -or-
-
-    thumbprint = (required) a thumbrint associated
-        with the remote system.
-
-    -or-
-
-    host = (required) a hostname or ip address of the
-        remote system to connect to.
-
-    port = (optional) The Port Number to listen for
-        connections on, defaults to port 18593.
-
-See also: /BAN
-");
-                    break;
-
-                case "WHITELIST":
-                    Console.WriteLine(@"
-
-Summary:
-    Displays the current WHITELIST entries.
-
-Usage:
-    /WHITELIST
-
-See also: /ACCEPT, /BAN
-");
-                    break;
-
-                case "QUIT":
-                    Console.WriteLine(@"
-
-Summary:
-    Quit, gracefully disconnecting all remotes.
-
-Usage:
-    /QUIT
-");
-                    break;
-
-                case "HELP":
-                default:
-                    Console.WriteLine(@"
-
-/HELP [command]
-
-/LISTEN [port-number]
-/NOLISTEN
-
-/CONNECT <host>:<port>
-/DISCONNECT <alias|<host>:<port>>
-
-/ACCEPT <thumbprint> [alias]
-/BAN <thumbprint|alias|<host>:<port>>
-/WHITELIST
-
-/QUIT
-");
-                    break;
-            }
-        }
+        #region Help
 
         private static void PrintHelp() =>
             Console.WriteLine(@"
@@ -483,6 +188,6 @@ shenc e chat noip-username:noip-password
 === Then copy-paste the base64-encoded value into your config.
 === ");
 
-        #endregion Interactive Help
+        #endregion Help
     }
 }
