@@ -231,7 +231,7 @@ namespace CQ.Network
             }
         }
 
-        public void AcceptClient(string[] commandParts)
+        public string AcceptClient(string[] commandParts)
         {
             if (commandParts.Length < 2)
             {
@@ -243,10 +243,10 @@ namespace CQ.Network
                 lock (_whitelist)
                 {
                     var thumbprint = commandParts[1];
-                    _whitelist.TryGetValue(thumbprint, out string L_alias);
-                    var alias = commandParts.Length > 2
+                    _whitelist.TryGetAlias(thumbprint, out string alias);
+                    alias = commandParts.Length > 2
                         ? commandParts[2]
-                        : L_alias
+                        : alias
                         ?? thumbprint;
                     _whitelist.Set(thumbprint, alias);
                     lock (_clients)
@@ -260,7 +260,7 @@ namespace CQ.Network
                         }
                     }
                     _whitelist.StoreWhitelist();
-                    $"ACCEPT: '{thumbprint}' => '{alias}'".Log();
+                    return $"ACCEPT: '{thumbprint}' => '{alias}'".Log();
                 }
             }
         }
@@ -313,29 +313,30 @@ namespace CQ.Network
             await Task.CompletedTask; // in most cases, ping() is fire-and-forget. except during initial connection, we use ping/pong as an initial CHAL
         }
 
-        [Obsolete("// TODO: remove callback, internalize behavior", false)]
         public async Task StartListening(
             CancellationTokenSource cancellationTokenSource,
-            int port,
-            Action<ClientState> onAcceptCallback) // TODO: remove callback, internalize behavior
+            int portNumber)
         {
             if (_listener == null)
             {
-                _listener = new TcpListener(IPAddress.Any, port);
+                $"Listening for connections on port '{portNumber}'.".Log();
+                _listener = new TcpListener(IPAddress.Any, portNumber);
                 _listener.Start(10);
-                $"LISTEN: Listening for connections on port '{port}'..".Log();
                 while (!cancellationTokenSource.IsCancellationRequested)
                 {
                     var client = await _listener.AcceptTcpClientAsync();
                     client.NoDelay = true;
                     var remoteEndPoint = (client.Client.RemoteEndPoint as IPEndPoint);
-                    $"Connection request from [{remoteEndPoint.Address}:{remoteEndPoint.Port}]".Log(System.Diagnostics.TraceEventType.Verbose);
-                    onAcceptCallback(new ClientState(
-                        $"{remoteEndPoint.Address}",
-                        remoteEndPoint.Port,
-                        client));
+                    $"Connection request from [{remoteEndPoint.Address}:{remoteEndPoint.Port}]".Log();
+                    OnClientAcceptCallback(
+                        new ClientState(
+                            $"{remoteEndPoint.Address}",
+                            remoteEndPoint.Port,
+                            client),
+                        _rsa);
                 }
                 _listener.Stop();
+                $"Stopped listening for connections on port '{portNumber}'.".Log();
             }
         }
 
@@ -355,7 +356,6 @@ namespace CQ.Network
                     ex.Log();
                 }
             }
-            "NOLISTEN: Stopped listening.".Log();
         }
 
         public async Task StopClientWorker(ClientState client)

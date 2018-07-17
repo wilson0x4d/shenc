@@ -85,13 +85,20 @@ namespace shenc
                             break;
 
                         case "/LISTEN":
-                            // TODO: control accept queue length
-#pragma warning disable 4014
-                            _netwk.StartListening(
-                                cancellationTokenSource,
-                                commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593,
-                                (client) => _netwk.OnClientAcceptCallback(client, rsa));
-#pragma warning restore 4014
+                            {
+                                // TODO: control accept queue length
+                                var portNumber = commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593;
+                                Console.WriteLine($"Listening for connections on port '{portNumber}'..");
+                                _netwk
+                                    .StartListening(
+                                        cancellationTokenSource,
+                                        portNumber)
+                                    .ContinueWith(t =>
+                                    {
+                                        Console.WriteLine($"LISTEN: Stopped listening on {portNumber}.");
+                                    });
+
+                            }
                             break;
 
                         case "/DISCONNECT":
