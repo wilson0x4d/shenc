@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "shenc": {
+      "commandName": "Project",
+      "commandLineArgs": "chat"
+    }
+  }
+}
