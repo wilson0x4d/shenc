@@ -38,16 +38,19 @@ namespace CQ.Network
 
         private readonly Whitelist _whitelist;
 
+        private readonly Action<string> _onStatusChange;
+
         private readonly RSA _rsa;
 
         private TcpListener _listener;
 
-        public Netwk(Crypt crypt, Whitelist whitelist, RSA rsa)
+        public Netwk(Crypt crypt, Whitelist whitelist, RSA rsa, Action<string> onStatusChange)
         {
             _rsa = rsa;
             _crypt = crypt;
             _clients = new Dictionary<string, ClientState>(StringComparer.OrdinalIgnoreCase);
             _whitelist = whitelist;
+            _onStatusChange = onStatusChange;
         }
 
         public Task<string> UpdateDynamicDns()
@@ -387,11 +390,10 @@ namespace CQ.Network
             }
         }
 
-        public async Task<string/*worker feedback*/> StartClientWorker(
+        public async Task StartClientWorker(
             ClientState client,
             RSA rsa)
         {
-            var result = new StringBuilder(); // TODO: transitional, the absurdity of this is obvious (network tier is responsible for presentation!)
             client.CancellationTokenSource = new CancellationTokenSource();
 
             // exchange our pubkey in the clear, this starts our conversation with remote
@@ -441,7 +443,7 @@ namespace CQ.Network
                             if (client.RSA == null)
                             {
                                 // expect to receive pubkey from remote in the clear
-                                var clientRSA = RSA.Create();
+                                var clientRSA = RSA.Create(); // TODO: verify disposal
                                 clientRSA.ImportParameters(
                                     JsonConvert.DeserializeObject<RSAParameters>(
                                         Encoding.UTF8.GetString(edata)));
@@ -450,15 +452,14 @@ namespace CQ.Network
                                 // check client pubkey thumbprint against whitelist, if not in whitelist then force a disconnect
                                 if (_whitelist.TryGetAlias(client.Thumbprint, out string alias))
                                 {
-                                        result.AppendLine($"Connected to {client}");
-                                        result
-                                            .AppendLine($@"Rejecting {client}, thumbprint is not authorized.")
-                                            .AppendLine("You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.");
                                     client.Alias = alias;
+                                    _onStatusChange($"Connected to {client}");
                                 }
                                 else
                                 {
                                     client.Alias = client.Thumbprint;
+                                    _onStatusChange($@"Rejecting {client}, thumbprint is not authorized.
+You can use the `/ACCEPT <thumbprint>` and `/BAN <thumbprint>` commands to authorized/deauthorize.".Log());
                                     break;
                                 }
                             }
@@ -498,7 +499,7 @@ namespace CQ.Network
                         writeOffset += cb;
                         if (cb == 0)
                         {
-                            result.AppendLine($"WORKER: Disconnection request detected for [{client.HostName}:{client.PortNumber}]".Log());
+                            _onStatusChange($"WORKER: Disconnection request detected for [{client.HostName}:{client.PortNumber}]".Log());
                             // remote closure initiated
                             client.CancellationTokenSource.Cancel();
                             break;
@@ -531,9 +532,8 @@ namespace CQ.Network
                 client.TcpClient.Close();
                 client.TcpClient.Dispose();
                 client.TcpClient = null;
-                result.AppendLine($"WORKER: Disconnected from client".Log());
+                _onStatusChange($"WORKER: Disconnected from client".Log());
             }
-            return result.ToString();
         }
 
         public void OnClientAcceptCallback(ClientState client, RSA rsa)
