@@ -217,11 +217,22 @@ Usage:
 ");
                     break;
 
+                case "THUMBPRINT":
+                    Console.WriteLine(@"
+
+Summary:
+    Displays the thumbprint for the keypair being 
+    used to secure your current session.
+
+Usage:
+    /THUMBPRINT
+");
+                    break;
+
                 case "HELP":
                 default:
                     Console.WriteLine(@"
-
-/HELP [command]
+The list of interactive mode commands includes:
 
 /LISTEN [port-number]
 /NOLISTEN
@@ -231,12 +242,14 @@ Usage:
 
 /WHITELIST [<thumbprint> [alias]]
 /BAN <thumbprint|alias|<host[:port]>>
-/WHITELIST
 
+/SAY <message>
+/THUMBPRINT
+/HELP [command]
 /QUIT
 
-Typing text and pressing ENTER will send your message to all connected remotes.
-
+For detailed help use the /HELP command, followed
+by the command you are interested in.
 ");
                     break;
             }
@@ -254,6 +267,10 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                 {
                     case "/QUIT":
                         await QUIT(commandParts);
+                        return;
+
+                    case "/THUMBPRINT":
+                        await THUMBPRINT(commandParts);
                         return;
 
                     case "/LISTEN":
@@ -296,6 +313,18 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                         break;
                 }
             }
+        }
+
+        private async Task THUMBPRINT(string[] commandParts)
+        {
+            var thumbprint = _crypt.GetThumbprint(_rsa);
+            Console.WriteLine($@"
+The thumbprint of the key being used to secure your session is:
+
+    {thumbprint}
+
+You can safely share this thumbprint with others.");
+            await Task.CompletedTask;
         }
 
         private async Task SAY(string[] commandParts)

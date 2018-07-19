@@ -52,8 +52,10 @@ namespace shenc
                 OnStatusChanged,
                 cancellationTokenSource);
 
+            interactiveShell.ProcessCommand("/THUMBPRINT").Wait();
+
             InteractiveShell.PrintInteractiveHelp("HELP");
-            Console.WriteLine("Welcome to Interactive Mode, enter one of the commands above to get started.");
+
 
             while (!cancellationTokenSource.IsCancellationRequested)
             {
