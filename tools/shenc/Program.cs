@@ -32,19 +32,20 @@ namespace shenc
             var whitelist = new Whitelist();
             whitelist.ReloadWhitelist();
 
-            var netwk = new Netwk(
+            var cqHub = new CQHub(
                 _crypt,
                 whitelist,
                 rsa,
                 OnStatusChanged);
 
 #pragma warning disable 4014
-            netwk.UpdateDynamicDnsAsync();
+            var ddnsUpdater = new DynamicDnsUpdater(_crypt, OnStatusChanged);
+            ddnsUpdater.UpdateDynamicDnsAsync();
 #pragma warning restore 4014
 
             var interactiveShell = new InteractiveShell(
                 whitelist,
-                netwk,
+                cqHub,
                 _crypt,
                 _processId,
                 rsa,
@@ -59,7 +60,15 @@ namespace shenc
                 var command = Console.ReadLine();
                 if (!string.IsNullOrWhiteSpace(command))
                 {
-                    interactiveShell.ProcessCommand(command);
+                    try
+                    {
+                        var task = interactiveShell.ProcessCommand(command);
+                        task.Wait();
+                    }
+                    catch (Exception ex)
+                    {
+                        ex.Log();
+                    }
                 }
             }
         }

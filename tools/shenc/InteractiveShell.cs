@@ -5,6 +5,7 @@ using System;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
+using System.Threading.Tasks;
 using X4D.Diagnostics.Logging;
 
 namespace shenc
@@ -17,7 +18,7 @@ namespace shenc
     {
         private readonly Whitelist _whitelist;
 
-        private readonly Netwk _netwk;
+        private readonly CQHub _cqHub;
 
         private readonly Crypt _crypt;
 
@@ -29,7 +30,7 @@ namespace shenc
 
         public InteractiveShell(
             Whitelist whitelist,
-            Netwk netwk,
+            CQHub cqHub,
             Crypt crypt,
             int processId,
             RSA rsa,
@@ -37,16 +38,22 @@ namespace shenc
             CancellationTokenSource cancellationTokenSource)
         {
             _whitelist = whitelist;
-            _netwk = netwk;
+            _cqHub = cqHub;
             _crypt = crypt;
             _processId = processId;
             _rsa = rsa;
             _cancellationTokenSource = cancellationTokenSource;
-            _netwk = new Netwk(_crypt, _whitelist, rsa, onStatusChange);
-            _netwk.MessageReceived += (s, e) =>
-            {
-                Console.WriteLine($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {e.Client}> {e.Message}");
-            };
+            _cqHub.NewConnection += Hub_NewConnection;
+        }
+
+        private void Hub_NewConnection(object sender, CQConnectionEventArgs e)
+        {
+            e.Connection.MessageReceived += Connection_MessageReceived;
+        }
+
+        private void Connection_MessageReceived(object sender, CQConnection.MessageReceivedEventArgs e)
+        {
+            Console.WriteLine($"({DateTime.UtcNow.ToString("HH:mm:ss")}) {e.Peer}> {e.Message}");
         }
 
         public static void PrintInteractiveHelp(string commandName = "HELP")
@@ -237,7 +244,7 @@ Typing text and pressing ENTER will send your message to all connected remotes.
             #endregion Interactive Help
         }
 
-        public void ProcessCommand(string command)
+        public async Task ProcessCommand(string command)
         {
             var commandParts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (commandParts.Length > 0)
@@ -246,39 +253,39 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                 switch (commandParts[0])
                 {
                     case "/QUIT":
-                        QUIT(commandParts);
+                        await QUIT(commandParts);
                         return;
 
                     case "/LISTEN":
-                        LISTEN(commandParts);
+                        await LISTEN(commandParts);
                         return;
 
                     case "/DISCONNECT":
-                        DISCONNECT(commandParts);
+                        await DISCONNECT(commandParts);
                         return;
 
                     case "/CONNECT":
-                        CONNECT(commandParts);
+                        await CONNECT(commandParts);
                         return;
 
                     case "/NOLISTEN":
-                        NOLISTEN(commandParts);
+                        await NOLISTEN(commandParts);
                         return;
 
                     case "/PING":
-                        PING(commandParts);
+                        await PING(commandParts);
                         return;
 
                     case "/BAN":
-                        BAN(commandParts);
+                        await BAN(commandParts);
                         return;
 
                     case "/WHITELIST":
-                        WHITELIST(commandParts);
+                        await WHITELIST(commandParts);
                         return;
 
                     case "/SAY":
-                        SAY(commandParts);
+                        await SAY(commandParts);
                         return;
 
                     default:
@@ -291,18 +298,18 @@ Typing text and pressing ENTER will send your message to all connected remotes.
             }
         }
 
-        private void SAY(string[] commandParts)
+        private async Task SAY(string[] commandParts)
         {
-            _netwk.SendChatMessage(
-                string.Join(' ', commandParts.Skip(1)));
+            var message = string.Join(' ', commandParts.Skip(1));
+            await _cqHub.RelayChatMessage(message);
         }
 
-        private void WHITELIST(string[] commandParts)
+        private async Task WHITELIST(string[] commandParts)
         {
             if (commandParts?.Length > 1)
             {
                 Console.WriteLine(
-                    _netwk.AcceptClient(commandParts));
+                    AcceptClient(commandParts));
             }
             else
             {
@@ -311,59 +318,111 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                     Console.WriteLine($"WHITELIST: {entry}");
                 }
             }
+            await Task.CompletedTask;
         }
 
-        private void BAN(string[] commandParts)
+        private async Task BAN(string[] commandParts)
         {
-            Console.WriteLine(
-                _netwk.Ban(commandParts));
-        }
-
-        private void PING(string[] commandParts)
-        {
-            _netwk.PingAllClients();
-        }
-
-        private void NOLISTEN(string[] commandParts)
-        {
-            _netwk.StopListening();
-        }
-
-        private void CONNECT(string[] commandParts)
-        {
-            // TODO: similar to whitelist need a "last seen" list so we can attempt a connect by thumbnail/alias (last seen shoudl index by thumbnail)
-            // treat each command input as a 'hostport'
-            commandParts.Skip(1).Select(async hostport =>
+            // remove from whitelist, each command part would be a new thumbprint/alias
+            foreach (var thumbprintOrAlias in commandParts)
             {
                 try
                 {
-                    Console.WriteLine($"Establishing connection to [{hostport}]");
-                    var client = await _netwk.ConnectTo(
-                        hostport,
-                        _rsa);
-                    await client.Worker;
-                    Console.WriteLine($"Disconnected from [{hostport}]");
+                    _whitelist.Remove(thumbprintOrAlias);
+                    await _cqHub.DisconnectClients(new[] { thumbprintOrAlias });
                 }
                 catch (Exception ex)
                 {
-                    // TODO: console?
                     ex.Log();
                 }
-            })
-            .ToArray();
+            }
         }
 
-        private void DISCONNECT(string[] commandParts)
+        public string AcceptClient(string[] commandParts)
         {
-            _netwk.DisconnectAllClients(commandParts);
+            if (commandParts.Length < 2)
+            {
+                // TODO: PrintInteractiveHelp(commandParts[0]);
+                throw new ArgumentException("invalid command parts");
+            }
+            else
+            {
+                lock (_whitelist)
+                {
+                    var thumbprint = commandParts[1];
+                    _whitelist.TryGetAlias(thumbprint, out string alias);
+                    alias = commandParts.Length > 2
+                        ? commandParts[2]
+                        : alias
+                        ?? thumbprint;
+                    _whitelist.Set(thumbprint, alias);
+                    _cqHub.UpdatePeerInfo(peer =>
+                    {
+                        if (peer.Thumbprint.Equals(thumbprint, StringComparison.OrdinalIgnoreCase))
+                        {
+                            peer.Alias = alias;
+                            return true;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    });
+                    _whitelist.StoreWhitelist();
+                    return $"ACCEPT: '{thumbprint}' => '{alias}'".Log();
+                }
+            }
         }
 
-        private void LISTEN(string[] commandParts)
+        private async Task PING(string[] commandParts)
+        {
+            // TODO: ping specific client(s)
+            await _cqHub.PingAllClients();
+            // TODO: correlation of PONG! for latency info?
+        }
+
+        private async Task NOLISTEN(string[] commandParts)
+        {
+            await _cqHub.StopListening();
+        }
+
+        private async Task CONNECT(string[] commandParts)
+        {
+            var hostport = string.Join(' ', commandParts.Skip(1).ToArray());
+            try
+            {
+                Console.WriteLine($"Establishing connection to [{hostport}]");
+                await _cqHub.ConnectTo(hostport);
+            }
+            catch (Exception ex)
+            {
+                // TODO: console?
+                ex.Log();
+            }
+        }
+
+        private async Task DISCONNECT(string[] commandParts)
+        {
+            var hostportOrThumbprintOrAlias = string.Join(' ', commandParts.Skip(1).ToArray());
+            try
+            {
+                Console.WriteLine($"Disconnecting from [{hostportOrThumbprintOrAlias}]");
+                await _cqHub.DisconnectClients(new[] { hostportOrThumbprintOrAlias });
+            }
+            catch (Exception ex)
+            {
+                // TODO: console?
+                ex.Log();
+            }
+        }
+
+        private async Task LISTEN(string[] commandParts)
         {
             // TODO: control accept queue length
             var portNumber = commandParts.Length > 1 ? int.Parse(commandParts[1]) : 18593;
             Console.WriteLine($"Listening for connections on port '{portNumber}'..");
-            _netwk
+#pragma warning disable 4014
+            _cqHub
                 .StartListening(
                     _cancellationTokenSource,
                     portNumber)
@@ -378,14 +437,16 @@ Typing text and pressing ENTER will send your message to all connected remotes.
                         Console.WriteLine($"LISTEN: Failed to stop listening on {portNumber}.");
                     }
                 });
+#pragma warning restore 4014
+            await Task.CompletedTask;
         }
 
-        private void QUIT(string[] commandParts)
+        private async Task QUIT(string[] commandParts)
         {
             try
             {
                 Console.WriteLine("Disconnecting..".Log());
-                _netwk.ShutdownAllClientWorkers();
+                await _cqHub.DisconnectClients();
             }
             finally
             {
