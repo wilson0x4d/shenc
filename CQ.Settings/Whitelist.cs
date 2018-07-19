@@ -100,11 +100,18 @@ namespace CQ.Settings
             }
         }
 
-        public bool Remove(string thumbprint)
+        public bool Remove(string criteria)
         {
             lock (_thumbprints)
             {
-                return _thumbprints.Remove(thumbprint);
+                var thumbprint = _thumbprints
+                    .Where(kvp =>
+                        kvp.Key.Equals(criteria, StringComparison.InvariantCultureIgnoreCase)
+                        || kvp.Value.Equals(criteria, StringComparison.InvariantCultureIgnoreCase))
+                    .Select(kvp => kvp.Key)
+                    .FirstOrDefault();
+                return (!string.IsNullOrWhiteSpace(thumbprint))
+                    && _thumbprints.Remove(thumbprint);
             }
         }
 
