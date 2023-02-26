@@ -11,7 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.CSharp" Version="4.5.0" />
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
-    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.17" />
+    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.19" />
   </ItemGroup>
 
   <ItemGroup>

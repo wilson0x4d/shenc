@@ -10,13 +10,13 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.8.0" />
     <PackageReference Include="MSTest.TestAdapter" Version="1.3.2" />
     <PackageReference Include="MSTest.TestFramework" Version="1.3.2" />
-    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.17" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CQ.Crypto\CQ.Crypto.csproj" />
     <ProjectReference Include="..\CQ.Network\CQ.Network.csproj" />
     <ProjectReference Include="..\CQ.Settings\CQ.Settings.csproj" />
+    <ProjectReference Include="..\CQ\CQ.csproj" />
   </ItemGroup>
 
 </Project>

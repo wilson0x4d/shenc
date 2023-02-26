@@ -22,6 +22,7 @@ namespace shenc
 
         static Program()
         {
+            X4D.Diagnostics.Logging.LoggingExtensions.Settings.ShouldNormalizeMessages = false;
             _crypt = new Crypt();
         }
 

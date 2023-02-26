@@ -463,7 +463,8 @@ You can safely share this thumbprint with others.");
                     }
                     else
                     {
-                        Console.WriteLine($"LISTEN: Failed to stop listening on {portNumber}.");
+                        t.Exception.Log();
+                        Console.WriteLine($"LISTEN: Listener failed.");
                     }
                 });
 #pragma warning restore 4014

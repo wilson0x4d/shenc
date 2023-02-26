@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.17" />
+    <PackageReference Include="X4D.Diagnostics" Version="0.1.0.19" />
   </ItemGroup>
 
 </Project>
