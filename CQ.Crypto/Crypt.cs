@@ -155,14 +155,22 @@ namespace CQ.Crypto
         public string EncryptFile(string keyid, string input)
         {
             var rsa = LoadKeypair(keyid);
+            var rng = new RNGCryptoServiceProvider();
+            var blockSize = (rsa.KeySize / 8) - 17;
+            var pdata = new byte[blockSize];
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                var data = new byte[infile.Length];
-                infile.Read(data, 0, data.Length);
-                var edata = rsa.Encrypt(data, RSAEncryptionPadding.Pkcs1);
+                var dataLength = infile.Length;
                 using (var outfile = File.Open($"{input}.out", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
-                    outfile.Write(edata, 0, edata.Length);
+                    outfile.Write(BitConverter.GetBytes(infile.Length), 0, 8);
+                    for (int i = 0; i < dataLength; i += blockSize)
+                    {
+                        rng.GetNonZeroBytes(pdata);
+                        infile.Read(pdata, 0, blockSize);
+                        var edata = rsa.Encrypt(pdata, RSAEncryptionPadding.Pkcs1);
+                        outfile.Write(edata, 0, edata.Length);
+                    }
                     outfile.Flush();
                     outfile.Close();
                 }
@@ -183,18 +191,25 @@ namespace CQ.Crypto
         public string DecryptFile(string keyid, string input)
         {
             var rsa = LoadKeypair(keyid);
+            var blockSize = (rsa.KeySize / 8) - 17;
+            var edata = new byte[blockSize + 17];
             using (var infile = File.Open($"{input}", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
+                var lenbuf = new byte[8];
+                infile.Read(lenbuf, 0, 8);
+                var pdataLength = BitConverter.ToInt64(lenbuf, 0);
                 if (input.EndsWith(".out"))
                 {
                     input = input.Substring(0, input.Length - 4);
                 }
-                var edata = new byte[infile.Length];
-                infile.Read(edata, 0, edata.Length);
-                var data = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
                 using (var outfile = File.Open($"{input}", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
-                    outfile.Write(data, 0, data.Length);
+                    for (int i = 0; i < pdataLength; i += blockSize)
+                    {
+                        infile.Read(edata, 0, edata.Length);
+                        var pdata = rsa.Decrypt(edata, RSAEncryptionPadding.Pkcs1);
+                        outfile.Write(pdata, 0, blockSize);
+                    }
                     outfile.Flush();
                     outfile.Close();
                 }
